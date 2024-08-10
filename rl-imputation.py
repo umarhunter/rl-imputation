@@ -3,7 +3,6 @@ import logging
 import numpy as np
 import pandas as pd
 import random
-from collections import defaultdict, deque
 from sklearn.preprocessing import MinMaxScaler
 
 # Import classes from external files
@@ -19,7 +18,7 @@ def rl_imputation(args):
     try:
         incomplete_data = pd.read_csv(args.incomplete_data)
         complete_data = pd.read_csv(args.complete_data)
-        numsteps = args.num_steps
+        numsteps = int(args.num_steps)
         logging.info(f"Data loaded from {args.incomplete_data} and {args.complete_data}.")
     except Exception as e:
         logging.error(f"Error loading data: {e}")
@@ -44,7 +43,7 @@ def rl_imputation(args):
         logging.info("Using Deep Q-Learning approach.")
         state_size = incomplete_data.size
         action_size = max(len(env.get_possible_actions(col)) for col in range(incomplete_data.shape[1]))
-        agent = DQNAgent(state_size=state_size, action_size=action_size)
+        agent = DQNAgent(env, state_size=state_size, action_size=action_size)  # Pass env to DQNAgent
 
         EPISODES = numsteps
         for e in range(EPISODES):
@@ -69,15 +68,17 @@ def rl_imputation(args):
 def main():
     # Parse command-line arguments
     parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
-    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning'], default='q-learning',
+    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning'], default='qlearning',
                         help='Choose the RL method: qlearning or dqlearning')
-    parser.add_argument('--num_steps', type=str, default=500000,
+    parser.add_argument('--num_steps', type=int, default=500000,
                         help='Number of training steps for RL Agent')
     parser.add_argument('--incomplete_data', type=str, default='data/toy_dataset_missing.csv',
                         help='Path to incomplete data CSV file')
     parser.add_argument('--complete_data', type=str, default='data/toy_dataset.csv',
                         help='Path to complete data CSV file')
     args = parser.parse_args()
+
+    rl_imputation(args)
 
 
 if __name__ == '__main__':
