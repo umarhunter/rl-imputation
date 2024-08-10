@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 
@@ -8,6 +9,8 @@ class ImputationEnvironment:
         self.complete_data = complete_data
         self.state = incomplete_data.copy()
         self.missing_indices = np.argwhere(pd.isna(incomplete_data.values))
+        if len(self.missing_indices) == 0:
+            logging.warning("Environment initialized with no missing indices.")
 
     def reset(self):
         """Reset the environment state to the initial incomplete data."""
