@@ -1,5 +1,5 @@
 from ucimlrepo import fetch_ucirepo, list_available_datasets
-import util
+from util.util import generate_missing_df
 
 
 def print_prompt_box(prompt, content):
@@ -45,5 +45,5 @@ def get_data(dataset_id, X=False, y=False, variable_info=False, metadata=False):
 def load_dataset(datasetid, missing_rate=0.2):
     dataset = get_data(datasetid)
     df = dataset.data.original
-    missing_df = util.generate_missing_df(df, missing_rate)
+    missing_df = generate_missing_df(df, missing_rate)
     return df, missing_df
