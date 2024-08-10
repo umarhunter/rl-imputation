@@ -8,13 +8,29 @@ from sklearn.preprocessing import MinMaxScaler
 # Import classes from external files
 from qlearning import ImputationEnvironment, QLearningAgent
 from dqlearning import DQNAgent
+from util import util, data
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
+    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning'], default='qlearning',
+                        help='Choose the RL method: qlearning or dqlearning')
+    parser.add_argument('--episodes', type=int, default=100000,
+                        help='Number of training steps for RL Agent')
+    parser.add_argument('--id', type=int, help='ID of the UCI dataset to use for imputation'),
+    parser.add_argument('--incomplete_data', type=str, default='data/toy_dataset_missing.csv',
+                        help='Path to incomplete data CSV file')
+    parser.add_argument('--complete_data', type=str, default='data/toy_dataset.csv',
+                        help='Path to complete data CSV file')
+    return parser.parse_args()
+
+
 def rl_imputation(args):
     # Load data
+
     try:
         incomplete_data = pd.read_csv(args.incomplete_data)
         complete_data = pd.read_csv(args.complete_data)
@@ -45,7 +61,6 @@ def rl_imputation(args):
         action_size = max(len(env.get_possible_actions(col)) for col in range(incomplete_data.shape[1]))
         agent = DQNAgent(env, state_size=state_size, action_size=action_size)  # Pass env to DQNAgent
 
-        EPISODES = numsteps
         for e in range(EPISODES):
             state = env.reset()
             state = state.values.flatten()
@@ -66,18 +81,7 @@ def rl_imputation(args):
 
 
 def main():
-    # Parse command-line arguments
-    parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
-    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning'], default='qlearning',
-                        help='Choose the RL method: qlearning or dqlearning')
-    parser.add_argument('--num_steps', type=int, default=500000,
-                        help='Number of training steps for RL Agent')
-    parser.add_argument('--incomplete_data', type=str, default='data/toy_dataset_missing.csv',
-                        help='Path to incomplete data CSV file')
-    parser.add_argument('--complete_data', type=str, default='data/toy_dataset.csv',
-                        help='Path to complete data CSV file')
-    args = parser.parse_args()
-
+    args = parse_args()
     rl_imputation(args)
 
 
