@@ -4,7 +4,7 @@ import logging
 import numpy as np
 import pandas as pd
 import random
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 
 # Import classes and utility functions from external files
 from qlearning import ImputationEnvironment, QLearningAgent
@@ -23,11 +23,33 @@ def parse_args():
                         help='Number of training steps for RL Agent')
     parser.add_argument('--id', type=int, help='ID of the UCI dataset to use for imputation'),
     parser.add_argument('--threshold', type=float, default=0.2,
-                        help='ID of the UCI dataset to use for imputation'),
+                        help='Threshold for missing data imputation'),
     parser.add_argument('--incomplete_data', type=str, help='Path to incomplete data CSV file')
     parser.add_argument('--complete_data', type=str, help='Path to complete data CSV file')
 
     return parser.parse_args()
+
+
+def preprocess_data(incomplete_data, complete_data):
+    # Identify categorical and numerical columns
+    categorical_columns = incomplete_data.select_dtypes(include=['object']).columns
+    numerical_columns = incomplete_data.select_dtypes(exclude=['object']).columns
+
+    # Encode categorical variables using Label Encoding
+    ## NOTE: Not sure if I should use label encoding or one-hot encoding
+    label_encoders = {}
+    for col in categorical_columns:
+        le = LabelEncoder()
+        incomplete_data[col] = le.fit_transform(incomplete_data[col].astype(str))
+        complete_data[col] = le.transform(complete_data[col].astype(str))
+        label_encoders[col] = le
+
+    # Scale numerical variables
+    scaler = MinMaxScaler()
+    incomplete_data[numerical_columns] = scaler.fit_transform(incomplete_data[numerical_columns])
+    complete_data[numerical_columns] = scaler.transform(complete_data[numerical_columns])
+
+    return incomplete_data, complete_data
 
 
 def rl_imputation(args):
@@ -50,10 +72,8 @@ def rl_imputation(args):
     incomplete_data.replace("?", np.nan, inplace=True)
     complete_data.replace("?", np.nan, inplace=True)
 
-    # Normalize the data
-    scaler = MinMaxScaler()
-    incomplete_data = pd.DataFrame(scaler.fit_transform(incomplete_data), columns=incomplete_data.columns)
-    complete_data = pd.DataFrame(scaler.transform(complete_data), columns=complete_data.columns)
+    # Preprocess the data
+    incomplete_data, complete_data = preprocess_data(incomplete_data, complete_data)
 
     env = ImputationEnvironment(incomplete_data, complete_data)
 
