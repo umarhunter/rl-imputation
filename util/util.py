@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 
-def introduce_missingness(df, missing_rate):
+def generate_missing_df(df, missing_rate):
     """Introduce missing values randomly into the dataframe at the specified rate."""
     df_with_missing = df.copy()
 
