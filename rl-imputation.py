@@ -4,16 +4,18 @@ import logging
 import numpy as np
 import pandas as pd
 import random
-from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 
 # Import classes and utility functions from external files
-from qlearning import ImputationEnvironment, QLearningAgent
+from environment import ImputationEnvironment
+from qlearning import QLearningAgent
 from dqlearning import DQNAgent
-from util import util, data_loader
+from util import data_loader
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# For detailed debugging information, use logging.DEBUG
+logging.getLogger().setLevel(logging.INFO)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
@@ -30,28 +32,6 @@ def parse_args():
     return parser.parse_args()
 
 
-def preprocess_data(incomplete_data, complete_data):
-    # Identify categorical and numerical columns
-    categorical_columns = incomplete_data.select_dtypes(include=['object']).columns
-    numerical_columns = incomplete_data.select_dtypes(exclude=['object']).columns
-
-    # Encode categorical variables using Label Encoding
-    ## NOTE: Not sure if I should use label encoding or one-hot encoding
-    label_encoders = {}
-    for col in categorical_columns:
-        le = LabelEncoder()
-        incomplete_data[col] = le.fit_transform(incomplete_data[col].astype(str))
-        complete_data[col] = le.transform(complete_data[col].astype(str))
-        label_encoders[col] = le
-
-    # Scale numerical variables
-    scaler = MinMaxScaler()
-    incomplete_data[numerical_columns] = scaler.fit_transform(incomplete_data[numerical_columns])
-    complete_data[numerical_columns] = scaler.transform(complete_data[numerical_columns])
-
-    return incomplete_data, complete_data
-
-
 def rl_imputation(args):
     try:
         episodes = args.episodes
@@ -60,7 +40,7 @@ def rl_imputation(args):
         if args.id is not None:
             datasetid = args.id
             logging.info(f"Loading dataset with ID {datasetid}")
-            incomplete_data, complete_data = data_loader.load_dataset(datasetid, threshold)
+            complete_data, incomplete_data = data_loader.load_dataset(datasetid, threshold)
         else:
             incomplete_data = pd.read_csv(args.incomplete_data)
             complete_data = pd.read_csv(args.complete_data)
@@ -69,12 +49,16 @@ def rl_imputation(args):
         logging.error(f"Error loading data: {e}")
         return
 
-    incomplete_data.replace("?", np.nan, inplace=True)
-    complete_data.replace("?", np.nan, inplace=True)
+    # Check for missing values after generation
+    logging.info(f"Number of missing data in incomplete_data before preprocessing: {incomplete_data.isnull().sum().sum()}")
 
     # Preprocess the data
-    incomplete_data, complete_data = preprocess_data(incomplete_data, complete_data)
+    incomplete_data, complete_data = data_loader.preprocess_data(incomplete_data, complete_data)
 
+    # Check for missing values after preprocessing
+    logging.info(f"Number of missing data in incomplete_data after preprocessing: {incomplete_data.isnull().sum().sum()}")
+
+    logging.info("Creating Imputation Environment.")
     env = ImputationEnvironment(incomplete_data, complete_data)
 
     if method == 'qlearning':

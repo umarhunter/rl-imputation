@@ -1,3 +1,7 @@
+import logging
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler, LabelEncoder
 from ucimlrepo import fetch_ucirepo, list_available_datasets
 from util.util import generate_missing_df
 
@@ -46,4 +50,50 @@ def load_dataset(datasetid, missing_rate=0.2):
     dataset = get_data(datasetid)
     df = dataset.data.original
     missing_df = generate_missing_df(df, missing_rate)
+
+    missing_values_count = missing_df.isna().sum().sum()
+    # Output result
+    if missing_values_count > 0:
+        logging.warning(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
+
     return df, missing_df
+
+
+def preprocess_data(incomplete_data, complete_data):
+    # Identify categorical and numerical columns
+    categorical_columns = incomplete_data.select_dtypes(include=['object', 'category']).columns
+    numerical_columns = incomplete_data.select_dtypes(include=['number']).columns
+
+    # Initialize scalers and encoders
+    scalers = {col: MinMaxScaler() for col in numerical_columns}
+    encoders = {col: LabelEncoder() for col in categorical_columns}
+
+    # Encode categorical variables
+    for col in categorical_columns:
+        # Fit on combined data to handle all possible categories
+        combined_data = pd.concat([incomplete_data[col], complete_data[col]], axis=0)
+        combined_filled = combined_data.fillna('MISSING_PLACEHOLDER').astype(str)
+
+        encoders[col].fit(combined_filled)
+
+        # Transform both datasets
+        incomplete_filled = incomplete_data[col].fillna('MISSING_PLACEHOLDER').astype(str)
+        complete_filled = complete_data[col].fillna('MISSING_PLACEHOLDER').astype(str)
+
+        incomplete_data[col] = encoders[col].transform(incomplete_filled)
+        complete_data[col] = encoders[col].transform(complete_filled)
+
+        # Restore NaNs in incomplete data
+        placeholder_index = encoders[col].transform(['MISSING_PLACEHOLDER'])[0]
+        incomplete_data.loc[incomplete_data[col] == placeholder_index, col] = np.nan
+
+    # Scale numerical variables
+    for col in numerical_columns:
+        # Fit scaler on complete data to ensure consistent scaling
+        scalers[col].fit(complete_data[[col]])
+
+        # Transform both datasets
+        incomplete_data[col] = scalers[col].transform(incomplete_data[[col]])
+        complete_data[col] = scalers[col].transform(complete_data[[col]])
+
+    return incomplete_data, complete_data
