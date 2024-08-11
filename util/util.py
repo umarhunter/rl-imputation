@@ -12,15 +12,26 @@ def generate_missing_df(df, missing_rate):
     # Number of elements to be set as NaN
     num_missing = int(missing_rate * total_elements)
 
+    # Flatten the DataFrame to get flat indices
+    flat_indices = np.arange(total_elements)
+
     # Get random indices
-    missing_indices = np.random.choice(total_elements, num_missing, replace=False)
+    missing_indices = np.random.choice(flat_indices, num_missing, replace=False)
 
     # Convert the flat indices to multi-dimensional indices
     multi_dim_indices = np.unravel_index(missing_indices, df_with_missing.shape)
 
     # Assign NaN to the chosen indices
-    df_with_missing.values[multi_dim_indices] = np.nan
+    for row_idx, col_idx in zip(*multi_dim_indices):
+        if pd.api.types.is_integer_dtype(df_with_missing.iloc[:, col_idx]):
+            # Convert integer column to float first if necessary
+            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float)
+
+        # Set NaN for the chosen index
+        df_with_missing.iat[row_idx, col_idx] = np.nan
+
     return df_with_missing
+
 
 
 def calculate_errors(imputed_data, actual_data):
