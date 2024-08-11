@@ -17,6 +17,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # For detailed debugging information, use logging.DEBUG
 logging.getLogger().setLevel(logging.INFO)
 
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
     parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning'], default='qlearning',
@@ -33,6 +34,7 @@ def parse_args():
 
 
 def rl_imputation(args):
+    toy_data = False
     try:
         episodes = args.episodes
         method = args.method
@@ -42,6 +44,8 @@ def rl_imputation(args):
             logging.info(f"Loading dataset with ID {datasetid}")
             complete_data, incomplete_data = data_loader.load_dataset(datasetid, threshold)
         else:
+            if args.incomplete_data == "data/toy_data_missing.csv" and args.complete_data == "data/toy_data.csv":
+                toy_data = True
             incomplete_data = pd.read_csv(args.incomplete_data)
             complete_data = pd.read_csv(args.complete_data)
             logging.info(f"Data loaded from {args.incomplete_data} and {args.complete_data}.")
@@ -49,14 +53,20 @@ def rl_imputation(args):
         logging.error(f"Error loading data: {e}")
         return
 
+    if toy_data:  # our toy dataset has "?" as missing values
+        incomplete_data.replace("?", np.nan, inplace=True)
+        complete_data.replace("?", np.nan, inplace=True)
+
     # Check for missing values after generation
-    logging.info(f"Number of missing data in incomplete_data before preprocessing: {incomplete_data.isnull().sum().sum()}")
+    logging.info(
+        f"Number of missing data in incomplete_data before preprocessing: {incomplete_data.isnull().sum().sum()}")
 
     # Preprocess the data
     incomplete_data, complete_data = data_loader.preprocess_data(incomplete_data, complete_data)
 
     # Check for missing values after preprocessing
-    logging.info(f"Number of missing data in incomplete_data after preprocessing: {incomplete_data.isnull().sum().sum()}")
+    logging.info(
+        f"Number of missing data in incomplete_data after preprocessing: {incomplete_data.isnull().sum().sum()}")
 
     logging.info("Creating Imputation Environment.")
     env = ImputationEnvironment(incomplete_data, complete_data)

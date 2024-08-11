@@ -54,7 +54,7 @@ def load_dataset(datasetid, missing_rate=0.2):
     missing_values_count = missing_df.isna().sum().sum()
     # Output result
     if missing_values_count > 0:
-        logging.warning(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
+        logging.info(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
 
     return df, missing_df
 
