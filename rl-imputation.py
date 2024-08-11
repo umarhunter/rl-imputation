@@ -44,7 +44,7 @@ def rl_imputation(args):
             logging.info(f"Loading dataset with ID {datasetid}")
             complete_data, incomplete_data = data_loader.load_dataset(datasetid, threshold)
         else:
-            if args.incomplete_data == "data/toy_data_missing.csv" and args.complete_data == "data/toy_data.csv":
+            if args.incomplete_data == "data/toy_dataset_missing.csv" and args.complete_data == "data/toy_dataset.csv":
                 toy_data = True
             incomplete_data = pd.read_csv(args.incomplete_data)
             complete_data = pd.read_csv(args.complete_data)
@@ -62,7 +62,8 @@ def rl_imputation(args):
         f"Number of missing data in incomplete_data before preprocessing: {incomplete_data.isnull().sum().sum()}")
 
     # Preprocess the data
-    incomplete_data, complete_data = data_loader.preprocess_data(incomplete_data, complete_data)
+    if not toy_data:
+        incomplete_data, complete_data = data_loader.preprocess_data(incomplete_data, complete_data)
 
     # Check for missing values after preprocessing
     logging.info(
@@ -77,11 +78,27 @@ def rl_imputation(args):
         agent.train(episodes=episodes)
         imputed_data = env.state
         print(imputed_data)
+        imputed_data.to_csv("results/imputed_data.csv", index=False)
+        if toy_data:
+            # Ensure the DataFrames have the same shape
+            if imputed_data.shape != complete_data.shape:
+                raise ValueError("DataFrames do not have the same shape")
+
+            # Ensure the DataFrames have the same columns
+            if not (imputed_data.columns == complete_data.columns):
+                raise ValueError("DataFrames do not have the same columns")
+
+            # Compare the DataFrames element-wise, handling NaN values
+            comparison = imputed_data.fillna(np.nan) == complete_data.fillna(np.nan)
+            similarity_percentage = comparison.mean().mean() * 100
+
+            print(f"Similarity Percentage: {similarity_percentage:.2f}%")
     elif method == 'dqlearning':
         logging.info("Using Deep Q-Learning approach.")
         state_size = incomplete_data.size
         action_size = max(len(env.get_possible_actions(col)) for col in range(incomplete_data.shape[1]))
         agent = DQNAgent(env, state_size=state_size, action_size=action_size)  # Pass env to DQNAgent
+
 
         for e in range(episodes):
             state = env.reset()
