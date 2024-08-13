@@ -1,12 +1,9 @@
 import numpy as np
-import pandas as pd
 import random
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from collections import deque
-from sklearn.preprocessing import MinMaxScaler
-from environment import ImputationEnvironment
 
 
 class DQNAgent:
