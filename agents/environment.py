@@ -10,7 +10,7 @@ class ImputationEnv(gym.Env):
         super(ImputationEnv, self).__init__()
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data.copy()
-
+        self.counter = 0
         # Find the missing indices
         self.missing_indices = np.argwhere(pd.isnull(self.incomplete_data).values)
         self.current_index = 0
@@ -39,15 +39,21 @@ class ImputationEnv(gym.Env):
         return self._get_observation()
 
     def _get_observation(self):
-        # Get the current row observation
-        obs = self.incomplete_data.iloc[self.current_index].fillna(0).values
+        if self.current_index >= len(self.missing_indices):
+            print(
+                f"current_index: {self.current_index}, len(missing_indices): {len(self.missing_indices)}, complete_data: {self.complete_data.shape}")
+            raise IndexError(
+                f"current_index {self.current_index} is out of bounds for the missing indices with length {len(self.missing_indices)}")
+
+        row, col = self.missing_indices[self.current_index]
+        obs = self.incomplete_data.iloc[row].fillna(0).values
         obs = self.scaler.transform([obs])[0]
         return obs.astype(np.float32)
 
     def step(self, action):
         # Ensure current index is within bounds
         if self.current_index >= len(self.missing_indices):
-            raise IndexError("Current index out of bounds in missing indices.")
+            raise IndexError(f"Current index {self.current_index} is out of bounds in missing indices.")
 
         # Get the row and column index of the missing value
         row, col = self.missing_indices[self.current_index]
@@ -70,6 +76,12 @@ class ImputationEnv(gym.Env):
         # Move to the next missing value
         self.current_index += 1
         done = self.current_index >= len(self.missing_indices)
+
+        if done:
+            #raise Exception("All missing values have been processed.")
+            self.current_index = self.current_index - 1
+            self.counter += 1
+            return self._get_observation(), 0.0, done, {}
 
         return self._get_observation(), reward, done, {}
 
