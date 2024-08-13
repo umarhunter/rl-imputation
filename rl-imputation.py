@@ -77,22 +77,26 @@ def rl_imputation(args):
         agent = QLearningAgent(env)
         agent.train(episodes=episodes)
         imputed_data = env.state
-        print(imputed_data)
         imputed_data.to_csv("results/imputed_data.csv", index=False)
-        if toy_data:
-            # Ensure the DataFrames have the same shape
-            if imputed_data.shape != complete_data.shape:
-                raise ValueError("DataFrames do not have the same shape")
+        #if toy_data:
+        # Ensure the DataFrames have the same shape
+        if imputed_data.shape != complete_data.shape:
+            raise ValueError("DataFrames do not have the same shape")
 
-            # Ensure the DataFrames have the same columns
-            if not (imputed_data.columns == complete_data.columns):
-                raise ValueError("DataFrames do not have the same columns")
+        # Ensure the DataFrames have the same columns
+        if not all(imputed_data.columns == complete_data.columns):
+            raise ValueError("DataFrames do not have the same columns")
 
-            # Compare the DataFrames element-wise, handling NaN values
-            comparison = imputed_data.fillna(np.nan) == complete_data.fillna(np.nan)
-            similarity_percentage = comparison.mean().mean() * 100
+        # Compare the DataFrames element-wise, handling NaN values correctly
+        comparison = imputed_data.fillna(np.nan).compare(complete_data.fillna(np.nan))
 
-            print(f"Similarity Percentage: {similarity_percentage:.2f}%")
+        # Calculate the percentage of matching elements
+        num_elements = imputed_data.size
+        num_matches = num_elements - comparison.shape[0]  # Non-matching rows are recorded
+        similarity_percentage = (num_matches / num_elements) * 100
+        print(imputed_data)
+        print(f"Similarity Percentage: {similarity_percentage:.2f}%")
+
     elif method == 'dqlearning':
         logging.info("Using Deep Q-Learning approach.")
         state_size = incomplete_data.size
@@ -112,6 +116,9 @@ def rl_imputation(args):
                 next_state = next_state.values.flatten()
                 agent.remember(state, action_index, reward, next_state, done, position_col_index)
                 state = next_state
+            # Log progress every 'log_interval' episodes
+            if (e + 1) % 5000 == 0:
+                logging.info(f"Episode {e + 1}/{episodes} completed with unknown steps.")
             agent.replay()
 
         agent.save("results/dqn_model.pth")
