@@ -4,11 +4,10 @@ import logging
 import numpy as np
 import pandas as pd
 import random
-import gym
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-
+import util.util
 
 # Import classes and utility functions from external files
 from agents.environment import ImputationEnvironment, ImputationEnv
@@ -17,10 +16,6 @@ from agents.custom_dqlearning import DQNAgent
 from util import data_loader
 from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.evaluation import evaluate_policy
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-from sklearn.preprocessing import MinMaxScaler
-
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,7 +26,8 @@ logging.getLogger().setLevel(logging.INFO)
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Choose RL approach and dataset for imputation.")
-    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning', 'customdqlearning'], default='qlearning',
+    parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning', 'customdqlearning'],
+                        default='qlearning',
                         help='Choose the RL method: qlearning or dqlearning')
     parser.add_argument('--episodes', type=int, default=100000,
                         help='Number of training steps for RL Agent')
@@ -89,7 +85,7 @@ def rl_imputation(args):
         agent.train(episodes=episodes)
         imputed_data = env.state
         imputed_data.to_csv("results/imputed_data.csv", index=False)
-        #if toy_data:
+
         # Ensure the DataFrames have the same shape
         if imputed_data.shape != complete_data.shape:
             raise ValueError("DataFrames do not have the same shape")
@@ -139,58 +135,20 @@ def rl_imputation(args):
         logging.info("Using Deep Q-Learning approach.")
 
         incomplete_data.replace("?", np.nan, inplace=True)
-        complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean
+        complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean, maybe delete later
 
         # Create the environment
         env = ImputationEnv(incomplete_data, complete_data)
-        #env = DummyVecEnv([lambda: env])  # Vectorize the environment
+        env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
         # Define the DQN model
         model = DQN('MlpPolicy', env, verbose=1)
 
         # Train the model
-        model.learn(total_timesteps=10000)
+        model.learn(total_timesteps=episodes)
 
-        # Evaluate the model
-        #mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
-        #print(f"Mean reward: {mean_reward} +/- {std_reward}")
-
-        # Save the trained model
-        model.save('results/dqn_imputation_model')
-
-        # Assuming env is your environment and you've already run the agent
-        imputed_data = env.incomplete_data  # Data after imputation
-        complete_data = env.complete_data  # The original complete data
-
-        # Ensure the indices of missing values are the same as those used during training
-        missing_indices = env.missing_indices
-
-        # Initialize lists to store the actual and imputed values
-        actual_values = []
-        imputed_values = []
-
-        # Tolerance level for considering values as matches
-        tolerance = 0.10
-
-        # Extract the actual and imputed values at the missing indices
-        for row, col in missing_indices:
-            actual_values.append(complete_data.iloc[row, col])
-            imputed_values.append(imputed_data.iloc[row, col])
-
-        # Convert lists to numpy arrays for comparison
-        actual_values = np.array(actual_values)
-        imputed_values = np.array(imputed_values)
-
-        # Calculate the Mean Absolute Error (MAE) or Mean Squared Error (MSE)
-        mae = mean_absolute_error(actual_values, imputed_values)
-        mse = mean_squared_error(actual_values, imputed_values)
-
-        print(f"Mean Absolute Error: {mae}")
-        print(f"Mean Squared Error: {mse}")
-
-        # Calculate the percentage of values that match within the tolerance
-        tolerance_match_rate = np.mean(np.abs(actual_values - imputed_values) <= tolerance) * 100
-        print(f"Tolerance-Based Match Rate (±{tolerance}): {tolerance_match_rate:.2f}%")
+        # Handle results
+        util.util.result_handler(model, env)
 
 
 def main():
