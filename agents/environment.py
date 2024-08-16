@@ -1,7 +1,8 @@
 import logging
-import gym
+import gymnasium as gym
 import numpy as np
 import pandas as pd
+
 from sklearn.preprocessing import MinMaxScaler
 
 
@@ -34,20 +35,37 @@ class ImputationEnv(gym.Env):
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self.scaler.fit(self.complete_data.fillna(0))
 
-    def reset(self):
+        # # Pre-calculate precision for each column
+        # self.precision_map = {
+        #     col: self.complete_data[col].apply(lambda x: len(str(x).split('.')[-1]) if '.' in str(x) else 0).max()
+        #     for col in self.complete_data.columns
+        # }
+    def reset(self, seed=None, options=None):
+        # Set the random seed if provided
+        if seed is not None:
+            np.random.seed(seed)
+
+        # Reset the environment's internal state
         self.current_index = 0
-        return self._get_observation()
+        initial_observation = self._get_observation()
+
+        # Return the initial observation and an empty info dictionary
+        return initial_observation, {}
 
     def _get_observation(self):
-        if self.current_index >= len(self.missing_indices):
-            print(
-                f"current_index: {self.current_index}, len(missing_indices): {len(self.missing_indices)}, complete_data: {self.complete_data.shape}")
-            raise IndexError(
-                f"current_index {self.current_index} is out of bounds for the missing indices with length {len(self.missing_indices)}")
+        # if self.current_index >= len(self.missing_indices):
+        #     print(
+        #         f"current_index: {self.current_index}, len(missing_indices): {len(self.missing_indices)}, complete_data: {self.complete_data.shape}")
+        #     raise IndexError(
+        #         f"current_index {self.current_index} is out of bounds for the missing indices with length {len(self.missing_indices)}")
 
         row, col = self.missing_indices[self.current_index]
-        obs = self.incomplete_data.iloc[row].fillna(0).values
-        obs = self.scaler.transform([obs])[0]
+
+        # will result in
+        # obs = self.incomplete_data.iloc[row].fillna(0).values
+        # obs = self.scaler.transform([obs])[0]
+        obs = self.incomplete_data.iloc[[row]].fillna(0)
+        obs = self.scaler.transform(obs)[0]
         return obs.astype(np.float32)
 
     def step(self, action):
@@ -62,7 +80,20 @@ class ImputationEnv(gym.Env):
         action_value = self.min_value + (action / (self.num_actions - 1)) * (self.max_value - self.min_value)
         predicted_value = action_value
 
+        # Get the actual value from the complete data
         actual_value = self.complete_data.iloc[row, col]
+
+        # # Retrieve the pre-calculated precision for the column
+        # column_name = self.incomplete_data.columns[col]
+        # precision = self.precision_map[column_name]
+        #
+        # # Round the imputed value to match the original data's precision
+        # if precision > 0:
+        #     predicted_value = round(predicted_value, precision)
+        # else:
+        #     predicted_value = round(predicted_value)
+
+        # predicted_value = round(predicted_value, 2)
 
         # Calculate reward based on accuracy of prediction
         reward = -abs(predicted_value - actual_value)  # Penalize based on the error
@@ -77,13 +108,16 @@ class ImputationEnv(gym.Env):
         self.current_index += 1
         done = self.current_index >= len(self.missing_indices)
 
-        if done:
-            #raise Exception("All missing values have been processed.")
-            self.current_index = self.current_index - 1
-            self.counter += 1
-            return self._get_observation(), 0.0, done, {}
+        # Set terminated and truncated
+        terminated = done
+        truncated = False  # Assuming no time limit is set, you can set it according to your use case
 
-        return self._get_observation(), reward, done, {}
+        if done:
+            self.current_index -= 1  # Adjust index to prevent out-of-bounds error
+            self.counter += 1
+            return self._get_observation(), 0.0, terminated, truncated, {}
+
+        return self._get_observation(), reward, terminated, truncated, {}
 
     def render(self, mode='human'):
         pass
