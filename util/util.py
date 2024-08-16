@@ -5,7 +5,20 @@ import os
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from stable_baselines3.common.evaluation import evaluate_policy
-from data_loader import get_dataset_name
+
+
+def get_dataset_name(dataset_id):
+    dataset_names = {
+        94: "spambase",
+        59: "letter_recognition",
+        17: "breast_cancer_wisconsin",
+        332: "online_news_popularity",
+        350: "default_credit_card_clients",
+        189: "parkinsons_telemonitoring",
+        484: "travel_reviews",
+        149: "statlog_vehicle_silhouettes"
+    }
+    return dataset_names.get(dataset_id, "unknown_dataset")
 
 
 def generate_missing_df(df, missing_rate):
@@ -49,7 +62,7 @@ def calculate_errors(imputed_data, actual_data):
     return mae, rmse
 
 
-def result_handler(model, env, dataset_id):
+def result_handler(model, env, dataset_id, episodes):
     # Assuming env is a DummyVecEnv
     env = env.envs[0]  # Unwrap the original environment
 
@@ -101,15 +114,28 @@ def result_handler(model, env, dataset_id):
         'dataset_name': get_dataset_name(dataset_id),
         'MAE': mae,
         'MSE': mse,
-        'tolerance_match_rate': tolerance_match_rate
+        'mean_reward': mean_reward,
+        'tolerance_match_rate': tolerance_match_rate,
+        'total_timesteps': episodes,
     }
 
-    # Save the results as a JSON file with the database name
-    file_name = f"{result_data['database_name']}.json"
+    # Ensure unique file names by appending a numerical suffix
     output_dir = 'results'
     os.makedirs(output_dir, exist_ok=True)
-    file_path = os.path.join(output_dir, file_name)
 
+    # Base file name without suffix
+    base_file_name = f"{result_data['dataset_name']}"
+
+    # Determine the next available suffix
+    file_index = 1
+    while True:
+        file_name = f"{base_file_name}_{file_index}.json"
+        file_path = os.path.join(output_dir, file_name)
+        if not os.path.exists(file_path):
+            break
+        file_index += 1
+
+    # Save the results as a JSON file with the unique name
     with open(file_path, 'w') as f:
         json.dump(result_data, f, indent=4)
 
