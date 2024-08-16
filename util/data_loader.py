@@ -58,20 +58,6 @@ def get_all_datasets():
         df.to_csv(file_name, index=False)
 
 
-def get_dataset_name(dataset_id):
-    dataset_names = {
-        94: "spambase",
-        59: "letter_recognition",
-        17: "breast_cancer_wisconsin",
-        332: "online_news_popularity",
-        350: "default_credit_card_clients",
-        189: "parkinsons_telemonitoring",
-        484: "travel_reviews",
-        149: "statlog_vehicle_silhouettes"
-    }
-    return dataset_names.get(dataset_id, "unknown_dataset")
-
-
 def load_dataset(datasetid, missing_rate=0.1):
     dataset = get_data(datasetid)
     df = dataset.data.original

@@ -7,13 +7,13 @@ import random
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import util.util
 
 # Import classes and utility functions from external files
 from agents.environment import ImputationEnvironment, ImputationEnv
 from agents.qlearning import QLearningAgent
 from agents.custom_dqlearning import DQNAgent
 from util import data_loader
+from util.util import result_handler
 from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv
 
@@ -148,7 +148,7 @@ def rl_imputation(args):
         model.learn(total_timesteps=episodes)
 
         # Handle results
-        util.util.result_handler(model, env)
+        result_handler(model, env, datasetid, episodes)
 
 
 def main():
