@@ -1,7 +1,11 @@
 import numpy as np
 import pandas as pd
+import json
+import os
+
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from stable_baselines3.common.evaluation import evaluate_policy
+from data_loader import get_dataset_name
 
 
 def generate_missing_df(df, missing_rate):
@@ -45,7 +49,7 @@ def calculate_errors(imputed_data, actual_data):
     return mae, rmse
 
 
-def result_handler(model, env):
+def result_handler(model, env, dataset_id):
     # Assuming env is a DummyVecEnv
     env = env.envs[0]  # Unwrap the original environment
 
@@ -56,7 +60,7 @@ def result_handler(model, env):
         print("Counter: ", env.counter)
 
     # Save the trained model
-    model.save('results/dqn_imputation_model')
+    # model.save('results/dqn_imputation_model')
 
     # Assuming env is your environment and you've already run the agent
     imputed_data = env.incomplete_data  # Data after imputation
@@ -91,3 +95,22 @@ def result_handler(model, env):
     # Calculate the percentage of values that match within the tolerance
     tolerance_match_rate = np.mean(np.abs(actual_values - imputed_values) <= tolerance) * 100
     print(f"Tolerance-Based Match Rate (±{tolerance}): {tolerance_match_rate:.2f}%")
+
+    # Create the result data
+    result_data = {
+        'dataset_name': get_dataset_name(dataset_id),
+        'MAE': mae,
+        'MSE': mse,
+        'tolerance_match_rate': tolerance_match_rate
+    }
+
+    # Save the results as a JSON file with the database name
+    file_name = f"{result_data['database_name']}.json"
+    output_dir = 'results'
+    os.makedirs(output_dir, exist_ok=True)
+    file_path = os.path.join(output_dir, file_name)
+
+    with open(file_path, 'w') as f:
+        json.dump(result_data, f, indent=4)
+
+    print(f"Results saved to {file_path}")
