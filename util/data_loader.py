@@ -46,7 +46,33 @@ def get_data(dataset_id, X=False, y=False, variable_info=False, metadata=False):
     return dataset
 
 
-def load_dataset(datasetid, missing_rate=0.2):
+def get_all_datasets():
+    datasets = {"Spambase": 94, "Letter Recognition": 59, "Breast Cancer Wisconsin": 17, "Online News Popularity": 332,
+                "Default Credit Card Clients": 350, "Parkinsons Telemonitoring": 189, "Travel Reviews": 484,
+                "Statlog": 149}
+
+    for dataset, num in datasets.items():
+        df = get_data(num)
+        df = df.data.original
+        file_name = dataset.lower().replace(" ", "_") + ".csv"
+        df.to_csv(file_name, index=False)
+
+
+def get_dataset_name(dataset_id):
+    dataset_names = {
+        94: "spambase",
+        59: "letter_recognition",
+        17: "breast_cancer_wisconsin",
+        332: "online_news_popularity",
+        350: "default_credit_card_clients",
+        189: "parkinsons_telemonitoring",
+        484: "travel_reviews",
+        149: "statlog_vehicle_silhouettes"
+    }
+    return dataset_names.get(dataset_id, "unknown_dataset")
+
+
+def load_dataset(datasetid, missing_rate=0.1):
     dataset = get_data(datasetid)
     df = dataset.data.original
     missing_df = generate_missing_df(df, missing_rate)
