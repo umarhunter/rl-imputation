@@ -5,7 +5,7 @@ import os
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from stable_baselines3.common.evaluation import evaluate_policy
-
+from numpy import float64
 
 def get_dataset_name(dataset_id):
     dataset_names = {
@@ -44,7 +44,7 @@ def generate_missing_df(df, missing_rate):
     for row_idx, col_idx in zip(*multi_dim_indices):
         if pd.api.types.is_integer_dtype(df_with_missing.iloc[:, col_idx]):
             # Convert integer column to float first if necessary
-            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float)
+            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float64)
 
         # Set NaN for the chosen index
         df_with_missing.iat[row_idx, col_idx] = np.nan

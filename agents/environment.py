@@ -40,6 +40,7 @@ class ImputationEnv(gym.Env):
         #     col: self.complete_data[col].apply(lambda x: len(str(x).split('.')[-1]) if '.' in str(x) else 0).max()
         #     for col in self.complete_data.columns
         # }
+
     def reset(self, seed=None, options=None):
         # Set the random seed if provided
         if seed is not None:
@@ -47,77 +48,60 @@ class ImputationEnv(gym.Env):
 
         # Reset the environment's internal state
         self.current_index = 0
-        initial_observation = self._get_observation()
+        self.counter = 0  # Reset any counters or additional state variables
+
+        # Optionally, you could shuffle missing indices if the order should vary between episodes
+        np.random.shuffle(self.missing_indices)
 
         # Return the initial observation and an empty info dictionary
+        initial_observation = self._get_observation()
         return initial_observation, {}
 
     def _get_observation(self):
-        # if self.current_index >= len(self.missing_indices):
-        #     print(
-        #         f"current_index: {self.current_index}, len(missing_indices): {len(self.missing_indices)}, complete_data: {self.complete_data.shape}")
-        #     raise IndexError(
-        #         f"current_index {self.current_index} is out of bounds for the missing indices with length {len(self.missing_indices)}")
+        # Check if the current_index is within the valid range
+        if self.current_index >= len(self.missing_indices):
+            # Return a default observation or handle it gracefully
+            # You might choose to return zeros or the last valid observation
+            #print(f"Warning: current_index {self.current_index} is out of bounds, returning default observation.")
+            default_obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+            return default_obs
 
+        # Proceed with normal observation retrieval if the index is valid
         row, col = self.missing_indices[self.current_index]
 
-        # will result in
-        # obs = self.incomplete_data.iloc[row].fillna(0).values
-        # obs = self.scaler.transform([obs])[0]
-        obs = self.incomplete_data.iloc[[row]].fillna(0)
+        obs = self.incomplete_data.iloc[[row]].fillna(0).infer_objects(copy=False)
         obs = self.scaler.transform(obs)[0]
         return obs.astype(np.float32)
 
     def step(self, action):
-        # Ensure current index is within bounds
+        # Check if the environment is done before processing the action
         if self.current_index >= len(self.missing_indices):
-            raise IndexError(f"Current index {self.current_index} is out of bounds in missing indices.")
+            terminated = True
+            truncated = False  # Adjust according to your time limit logic
+            self.counter += 1
 
-        # Get the row and column index of the missing value
+            # Return the final valid observation, with done=True
+            last_valid_obs = self._get_observation() if self.current_index > 0 else np.zeros(
+                self.observation_space.shape)
+            return last_valid_obs, 0.0, terminated, truncated, {}
+
+        # Proceed normally if not done
         row, col = self.missing_indices[self.current_index]
 
-        # Map the action to a real value
         action_value = self.min_value + (action / (self.num_actions - 1)) * (self.max_value - self.min_value)
         predicted_value = action_value
-
-        # Get the actual value from the complete data
         actual_value = self.complete_data.iloc[row, col]
 
-        # # Retrieve the pre-calculated precision for the column
-        # column_name = self.incomplete_data.columns[col]
-        # precision = self.precision_map[column_name]
-        #
-        # # Round the imputed value to match the original data's precision
-        # if precision > 0:
-        #     predicted_value = round(predicted_value, precision)
-        # else:
-        #     predicted_value = round(predicted_value)
-
-        # predicted_value = round(predicted_value, 2)
-
-        # Calculate reward based on accuracy of prediction
         reward = -abs(predicted_value - actual_value)  # Penalize based on the error
-
-        # Apply the imputation
         self.incomplete_data.iloc[row, col] = predicted_value
 
-        # Print the imputed value with row and column information
         print(f"Imputed value: {predicted_value} at row: {row}, column: {self.incomplete_data.columns[col]}")
 
-        # Move to the next missing value
         self.current_index += 1
         done = self.current_index >= len(self.missing_indices)
 
-        # Set terminated and truncated
-        terminated = done
-        truncated = False  # Assuming no time limit is set, you can set it according to your use case
-
-        if done:
-            self.current_index -= 1  # Adjust index to prevent out-of-bounds error
-            self.counter += 1
-            return self._get_observation(), 0.0, terminated, truncated, {}
-
-        return self._get_observation(), reward, terminated, truncated, {}
+        # Return the observation, reward, done flag, and info
+        return self._get_observation(), reward, done, False, {}
 
     def render(self, mode='human'):
         pass

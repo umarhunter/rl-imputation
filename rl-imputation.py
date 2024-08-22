@@ -3,6 +3,7 @@ import argparse
 import logging
 import numpy as np
 import pandas as pd
+pd.set_option('future.no_silent_downcasting', True)
 import random
 import numpy as np
 import pandas as pd
@@ -15,6 +16,7 @@ from agents.custom_dqlearning import DQNAgent
 from util import data_loader
 from util.util import result_handler
 from stable_baselines3 import DQN
+from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
 # Configure logging
@@ -42,6 +44,7 @@ def parse_args():
 
 def rl_imputation(args):
     toy_data = False
+    datasetid = None
     try:
         episodes = args.episodes
         method = args.method
@@ -137,15 +140,17 @@ def rl_imputation(args):
         incomplete_data.replace("?", np.nan, inplace=True)
         complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean, maybe delete later
 
+
         # Create the environment
         env = ImputationEnv(incomplete_data, complete_data)
+        env = Monitor(env)
         env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
         # Define the DQN model
         model = DQN('MlpPolicy', env, verbose=1)
 
         # Train the model
-        model.learn(total_timesteps=episodes)
+        model.learn(total_timesteps=episodes, log_interval=1000)
 
         # Handle results
         result_handler(model, env, datasetid, episodes)
