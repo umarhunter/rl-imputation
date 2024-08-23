@@ -69,18 +69,19 @@ def result_handler(model, env, dataset_id, episodes):
     mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
     print(f"Mean reward: {mean_reward} +/- {std_reward}")
 
-    if env.counter > 0:
-        print("Counter: ", env.counter)
+    counter = env.unwrapped.counter
+    if counter > 0:
+        print("Counter: ", counter)
 
     # Save the trained model
     # model.save('results/dqn_imputation_model')
 
-    # Assuming env is your environment and you've already run the agent
-    imputed_data = env.incomplete_data  # Data after imputation
-    complete_data = env.complete_data  # The original complete data
+    # Using env.unwrapped to access the original environment's attributes
 
+    imputed_data = env.unwrapped.incomplete_data
+    complete_data = env.unwrapped.complete_data
+    missing_indices = env.unwrapped.missing_indices
     # Ensure the indices of missing values are the same as those used during training
-    missing_indices = env.missing_indices
 
     # Initialize lists to store the actual and imputed values
     actual_values = []
@@ -117,6 +118,7 @@ def result_handler(model, env, dataset_id, episodes):
         'mean_reward': mean_reward,
         'tolerance_match_rate': tolerance_match_rate,
         'total_timesteps': episodes,
+        'num_actions': env.unwrapped.num_actions,
     }
 
     # Ensure unique file names by appending a numerical suffix

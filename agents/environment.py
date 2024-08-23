@@ -23,23 +23,29 @@ class ImputationEnv(gym.Env):
         # Define the range of possible actions
         self.min_value = self.complete_data.min().min()
         self.max_value = self.complete_data.max().max()
-        self.num_actions = 10  # Number of discrete actions
+        self.num_actions = 100  # Increased from 10 to allow finer-grained actions
+
 
         # Define action and observation spaces
         self.observation_space = gym.spaces.Box(
             low=self.min_value, high=self.max_value, shape=(self.incomplete_data.shape[1],), dtype=np.float32
         )
         self.action_space = gym.spaces.Discrete(self.num_actions)
-
+        #self.action_space = gym.spaces.Box(low=self.min_value, high=self.max_value, shape=(1,), dtype=np.float32)
         # Create a scaler for normalization
         self.scaler = MinMaxScaler(feature_range=(0, 1))
         self.scaler.fit(self.complete_data.fillna(0))
 
-        # # Pre-calculate precision for each column
-        # self.precision_map = {
-        #     col: self.complete_data[col].apply(lambda x: len(str(x).split('.')[-1]) if '.' in str(x) else 0).max()
-        #     for col in self.complete_data.columns
-        # }
+        # Precision map containing the max precision for each column, preventing loss of precision during imputation
+        self.precision_map = {}
+        for col in self.complete_data.columns:
+            max_precision = 0
+            for value in self.complete_data[col].dropna():
+                if '.' in str(value):
+                    decimal_places = len(str(value).split('.')[1])
+                    if decimal_places > max_precision:
+                        max_precision = decimal_places
+            self.precision_map[col] = max_precision
 
     def reset(self, seed=None, options=None):
         # Set the random seed if provided
@@ -89,7 +95,11 @@ class ImputationEnv(gym.Env):
         row, col = self.missing_indices[self.current_index]
 
         action_value = self.min_value + (action / (self.num_actions - 1)) * (self.max_value - self.min_value)
-        predicted_value = action_value
+
+        # Round the predicted value based on the column's precision
+        precision = self.precision_map[self.incomplete_data.columns[col]]
+        predicted_value = round(action_value, precision)
+
         actual_value = self.complete_data.iloc[row, col]
 
         reward = -abs(predicted_value - actual_value)  # Penalize based on the error

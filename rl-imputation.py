@@ -3,6 +3,7 @@ import argparse
 import logging
 import numpy as np
 import pandas as pd
+
 pd.set_option('future.no_silent_downcasting', True)
 import random
 import numpy as np
@@ -140,10 +141,9 @@ def rl_imputation(args):
         incomplete_data.replace("?", np.nan, inplace=True)
         complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean, maybe delete later
 
-
         # Create the environment
         env = ImputationEnv(incomplete_data, complete_data)
-        env = Monitor(env)
+        env = Monitor(env)  # wrapper for monitoring
         env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
         # Define the DQN model
