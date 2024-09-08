@@ -31,20 +31,6 @@ class ImputationEnv(gym.Env):
         )
         self.action_space = gym.spaces.Discrete(self.num_actions)
         #self.action_space = gym.spaces.Box(low=self.min_value, high=self.max_value, shape=(1,), dtype=np.float32)
-        # Create a scaler for normalization
-        self.scaler = MinMaxScaler(feature_range=(0, 1))
-        self.scaler.fit(self.complete_data.fillna(0))
-
-        # Precision map containing the max precision for each column, preventing loss of precision during imputation
-        self.precision_map = {}
-        for col in self.complete_data.columns:
-            max_precision = 0
-            for value in self.complete_data[col].dropna():
-                if '.' in str(value):
-                    decimal_places = len(str(value).split('.')[1])
-                    if decimal_places > max_precision:
-                        max_precision = decimal_places
-            self.precision_map[col] = max_precision
 
     def reset(self, seed=None, options=None):
         # Set the random seed if provided
