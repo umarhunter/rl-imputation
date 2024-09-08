@@ -3,8 +3,6 @@ import argparse
 import logging
 import numpy as np
 import pandas as pd
-
-pd.set_option('future.no_silent_downcasting', True)
 import random
 import numpy as np
 import pandas as pd
@@ -20,6 +18,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+pd.set_option('future.no_silent_downcasting', True)
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -32,7 +31,7 @@ def parse_args():
     parser.add_argument('--method', type=str, choices=['qlearning', 'dqlearning', 'customdqlearning'],
                         default='qlearning',
                         help='Choose the RL method: qlearning or dqlearning')
-    parser.add_argument('--episodes', type=int, default=100000,
+    parser.add_argument('--episodes', type=int, default=2000,
                         help='Number of training steps for RL Agent')
     parser.add_argument('--id', type=int, help='ID of the UCI dataset to use for imputation'),
     parser.add_argument('--threshold', type=float, default=0.2,
@@ -50,23 +49,23 @@ def rl_imputation(args):
         episodes = args.episodes
         method = args.method
         threshold = args.threshold
-        if args.id is not None:
+        if args.id is not None: # valid dataset from UCI repository
             datasetid = args.id
             logging.info(f"Loading dataset with ID {datasetid}")
             complete_data, incomplete_data = data_loader.load_dataset(datasetid, threshold)
         else:
-            if args.incomplete_data == "data/toy_dataset_missing.csv" and args.complete_data == "data/toy_dataset.csv":
-                toy_data = True
             incomplete_data = pd.read_csv(args.incomplete_data)
             complete_data = pd.read_csv(args.complete_data)
+
+            # Toy dataset for testing
+            if args.incomplete_data == "data/toy_dataset_missing.csv" and args.complete_data == "data/toy_dataset.csv":
+                incomplete_data.replace("?", np.nan, inplace=True)
+                complete_data.replace("?", np.nan, inplace=True)
+
             logging.info(f"Data loaded from {args.incomplete_data} and {args.complete_data}.")
     except Exception as e:
         logging.error(f"Error loading data: {e}")
         return
-
-    if toy_data:  # our toy dataset has "?" as missing values
-        incomplete_data.replace("?", np.nan, inplace=True)
-        complete_data.replace("?", np.nan, inplace=True)
 
     # Check for missing values after generation
     logging.info(
@@ -74,7 +73,8 @@ def rl_imputation(args):
 
     # Preprocess the data
     if not toy_data:
-        incomplete_data, complete_data = data_loader.preprocess_data(incomplete_data, complete_data)
+        complete_data, incomplete_data, scaler = data_loader.preprocess_data(incomplete_data, complete_data)
+
 
     # Check for missing values after preprocessing
     logging.info(
@@ -138,12 +138,13 @@ def rl_imputation(args):
     elif method == 'dqlearning':
         logging.info("Using Deep Q-Learning approach.")
 
+        # Replace missing values marked with "?" with np.nan
         incomplete_data.replace("?", np.nan, inplace=True)
-        complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean, maybe delete later
+        complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean
 
         # Create the environment
-        env = ImputationEnv(incomplete_data, complete_data)
-        env = Monitor(env)  # wrapper for monitoring
+        env = ImputationEnv(incomplete_data, complete_data, scaler)
+        env = Monitor(env)  # Wrapper for monitoring
         env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
         # Define the DQN model
@@ -152,8 +153,10 @@ def rl_imputation(args):
         # Train the model
         model.learn(total_timesteps=episodes, log_interval=1000)
 
-        # Handle results
+        # After training the DQN model, call result_handler to handle evaluation and saving
         result_handler(model, env, datasetid, episodes)
+
+        logging.info(f"DQN Imputation complete for dataset {datasetid}.")
 
 
 def main():

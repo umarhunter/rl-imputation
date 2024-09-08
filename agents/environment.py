@@ -3,14 +3,13 @@ import gymnasium as gym
 import numpy as np
 import pandas as pd
 
-from sklearn.preprocessing import MinMaxScaler
-
 
 class ImputationEnv(gym.Env):
-    def __init__(self, incomplete_data, complete_data):
+    def __init__(self, incomplete_data, complete_data, scaler):
         super(ImputationEnv, self).__init__()
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data.copy()
+        self.scaler = scaler  # the scaler for inverse transformation
         self.counter = 0
         # Find the missing indices
         self.missing_indices = np.argwhere(pd.isnull(self.incomplete_data).values)
@@ -83,7 +82,7 @@ class ImputationEnv(gym.Env):
         # Check if the environment is done before processing the action
         if self.current_index >= len(self.missing_indices):
             terminated = True
-            truncated = False  # Adjust according to your time limit logic
+            truncated = False  # additional flag to indicate if the episode was truncated
             self.counter += 1
 
             # Return the final valid observation, with done=True
@@ -94,24 +93,49 @@ class ImputationEnv(gym.Env):
         # Proceed normally if not done
         row, col = self.missing_indices[self.current_index]
 
+        # Calculate the action value based on the action taken by the agent (in scaled space)
         action_value = self.min_value + (action / (self.num_actions - 1)) * (self.max_value - self.min_value)
 
-        # Round the predicted value based on the column's precision
-        precision = self.precision_map[self.incomplete_data.columns[col]]
-        predicted_value = round(action_value, precision)
+        # Use the scaled space for both imputation and comparison
+        imputed_value_scaled = action_value  # The action value is in the scaled space
 
-        actual_value = self.complete_data.iloc[row, col]
+        # Get the actual scaled value from complete_data (already scaled)
+        actual_value_scaled = self.complete_data.iloc[row, col]
 
-        reward = -abs(predicted_value - actual_value)  # Penalize based on the error
-        self.incomplete_data.iloc[row, col] = predicted_value
+        # Compare the imputed value and actual value in the scaled space
+        reward = -abs(imputed_value_scaled - actual_value_scaled)
 
-        print(f"Imputed value: {predicted_value} at row: {row}, column: {self.incomplete_data.columns[col]}")
+        # Store the imputed value in the incomplete data (in the scaled space)
+        self.incomplete_data.iloc[row, col] = imputed_value_scaled
+
+        print(f"Imputed value (scaled): {imputed_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
+        print(f"Actual value (scaled): {actual_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
 
         self.current_index += 1
         done = self.current_index >= len(self.missing_indices)
 
         # Return the observation, reward, done flag, and info
         return self._get_observation(), reward, done, False, {}
+
+    def finalize_imputation(self):
+        """Inverse transform the scaled data back to the original scale."""
+        logging.info(f"First 5 rows of incomplete data after completing imputation:\n{self.incomplete_data.head(5)}")
+
+        # Ensure the data structure is consistent with what the scaler was fitted on
+        if self.incomplete_data.shape != self.complete_data.shape:
+            raise ValueError("Shape of incomplete data does not match complete data for inverse transformation.")
+
+        # Fill NaNs temporarily and apply inverse transform
+        incomplete_data_filled = self.incomplete_data.fillna(0)
+
+        # Apply inverse transform to the scaled data
+        imputed_data_original_scale = pd.DataFrame(
+            self.scaler.inverse_transform(incomplete_data_filled),
+            columns=self.incomplete_data.columns
+        )
+
+        logging.info(f"First 5 rows of imputed data in original scale:\n{imputed_data_original_scale.head(5)}")
+        return imputed_data_original_scale
 
     def render(self, mode='human'):
         pass

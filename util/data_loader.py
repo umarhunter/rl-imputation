@@ -58,54 +58,35 @@ def get_all_datasets():
         df.to_csv(file_name, index=False)
 
 
-def load_dataset(datasetid, missing_rate=0.1):
+def load_dataset(datasetid, missing_rate=0.10):
     dataset = get_data(datasetid)
     df = dataset.data.original
     missing_df = generate_missing_df(df, missing_rate)
 
     missing_values_count = missing_df.isna().sum().sum()
+
+    if datasetid == 17:
+        target_column = ['ID', 'Diagnosis']  # Hardcoded for the Breast Cancer Wisconsin dataset
+        incomplete_data = missing_df.drop(columns=target_column)
+        complete_data = df.drop(columns=target_column)
+        return complete_data, incomplete_data
+
     # Output result
     if missing_values_count > 0:
         logging.info(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
 
-    return df, missing_df
+def preprocess_data(complete_data, incomplete_data):
+    # Ensure complete_data is filled for fitting the scaler
+    complete_data_filled = complete_data.fillna(0)
 
+    # Fit the scaler on the complete data
+    scaler = MinMaxScaler()
+    scaler.fit(complete_data_filled)
 
-def preprocess_data(incomplete_data, complete_data):
-    # Identify categorical and numerical columns
-    categorical_columns = incomplete_data.select_dtypes(include=['object', 'category']).columns
-    numerical_columns = incomplete_data.select_dtypes(include=['number']).columns
+    # Scale both complete_data and incomplete_data
+    complete_data_scaled = pd.DataFrame(scaler.transform(complete_data_filled), columns=complete_data.columns)
 
-    # Initialize scalers and encoders
-    scalers = {col: MinMaxScaler() for col in numerical_columns}
-    encoders = {col: LabelEncoder() for col in categorical_columns}
+    # IMPORTANT: Do not fill missing values in incomplete_data
+    incomplete_data_scaled = pd.DataFrame(scaler.transform(incomplete_data), columns=incomplete_data.columns)
 
-    # Encode categorical variables
-    for col in categorical_columns:
-        # Fit on combined data to handle all possible categories
-        combined_data = pd.concat([incomplete_data[col], complete_data[col]], axis=0)
-        combined_filled = combined_data.fillna('MISSING_PLACEHOLDER').astype(str)
-
-        encoders[col].fit(combined_filled)
-
-        # Transform both datasets
-        incomplete_filled = incomplete_data[col].fillna('MISSING_PLACEHOLDER').astype(str)
-        complete_filled = complete_data[col].fillna('MISSING_PLACEHOLDER').astype(str)
-
-        incomplete_data[col] = encoders[col].transform(incomplete_filled)
-        complete_data[col] = encoders[col].transform(complete_filled)
-
-        # Restore NaNs in incomplete data
-        placeholder_index = encoders[col].transform(['MISSING_PLACEHOLDER'])[0]
-        incomplete_data.loc[incomplete_data[col] == placeholder_index, col] = np.nan
-
-    # Scale numerical variables
-    for col in numerical_columns:
-        # Fit scaler on complete data to ensure consistent scaling
-        scalers[col].fit(complete_data[[col]])
-
-        # Transform both datasets
-        incomplete_data[col] = scalers[col].transform(incomplete_data[[col]])
-        complete_data[col] = scalers[col].transform(complete_data[[col]])
-
-    return incomplete_data, complete_data
+    return complete_data_scaled, incomplete_data_scaled, scaler

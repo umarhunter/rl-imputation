@@ -1,3 +1,4 @@
+import logging
 import numpy as np
 import pandas as pd
 import json
@@ -63,82 +64,83 @@ def calculate_errors(imputed_data, actual_data):
 
 
 def result_handler(model, env, dataset_id, episodes):
+    """
+    Handles the result after training the model by evaluating performance,
+    saving the imputed data in its original scale, and saving metrics in a JSON file.
+    """
     # Assuming env is a DummyVecEnv
     env = env.envs[0]  # Unwrap the original environment
 
+    # Evaluate the model after training
     mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=10)
     print(f"Mean reward: {mean_reward} +/- {std_reward}")
 
-    counter = env.unwrapped.counter
-    if counter > 0:
-        print("Counter: ", counter)
+    counter = env.unwrapped.counter if hasattr(env.unwrapped, 'counter') else None
+    if counter and counter > 0:
+        print(f"Counter: {counter}")
 
-    # Save the trained model
-    # model.save('results/dqn_imputation_model')
+    # Once training is done, inverse-transform the imputed data back to the original scale
+    imputed_data_original_scale = env.unwrapped.finalize_imputation()
 
-    # Using env.unwrapped to access the original environment's attributes
+    # Convert the final imputed data back to a DataFrame (if necessary)
+    imputed_data_original_scale = pd.DataFrame(imputed_data_original_scale, columns=env.unwrapped.incomplete_data.columns)
 
-    imputed_data = env.unwrapped.incomplete_data
-    complete_data = env.unwrapped.complete_data
-    missing_indices = env.unwrapped.missing_indices
-    # Ensure the indices of missing values are the same as those used during training
+    # Save the final imputed dataset in the original scale
+    imputed_data_original_scale.to_csv(f"results/imputed_data_original_{dataset_id}.csv", index=False)
 
-    # Initialize lists to store the actual and imputed values
-    actual_values = []
-    imputed_values = []
+    # Compare with the original complete data
+    comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data)
 
-    # Tolerance level for considering values as matches
+    # Calculate Mean Absolute Error (MAE), Mean Squared Error (MSE), and Tolerance Match Rate
+    mae = mean_absolute_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
+    mse = mean_squared_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
     tolerance = 0.05
+    tolerance_match_rate = np.mean(np.abs(env.unwrapped.complete_data.values - imputed_data_original_scale.values) <= tolerance) * 100
 
-    # Extract the actual and imputed values at the missing indices
-    for row, col in missing_indices:
-        actual_values.append(complete_data.iloc[row, col])
-        imputed_values.append(imputed_data.iloc[row, col])
-
-    # Convert lists to numpy arrays for comparison
-    actual_values = np.array(actual_values)
-    imputed_values = np.array(imputed_values)
-
-    # Calculate the Mean Absolute Error (MAE) or Mean Squared Error (MSE)
-    mae = mean_absolute_error(actual_values, imputed_values)
-    mse = mean_squared_error(actual_values, imputed_values)
-
+    # Print and log the evaluation metrics
     print(f"Mean Absolute Error: {mae}")
     print(f"Mean Squared Error: {mse}")
-
-    # Calculate the percentage of values that match within the tolerance
-    tolerance_match_rate = np.mean(np.abs(actual_values - imputed_values) <= tolerance) * 100
     print(f"Tolerance-Based Match Rate (±{tolerance}): {tolerance_match_rate:.2f}%")
 
-    # Create the result data
+    # Calculate similarity percentage
+    similarity_percentage = 100 * (1 - comparison.shape[0] / imputed_data_original_scale.size)
+    print(f"Similarity Percentage: {similarity_percentage:.2f}%")
+
+    # Create result data for JSON output
     result_data = {
         'dataset_name': get_dataset_name(dataset_id),
         'MAE': mae,
         'MSE': mse,
         'mean_reward': mean_reward,
+        'counter': counter,
         'tolerance_match_rate': tolerance_match_rate,
         'total_timesteps': episodes,
         'num_actions': env.unwrapped.num_actions,
+        'similarity_percentage': similarity_percentage
     }
 
     # Ensure unique file names by appending a numerical suffix
     output_dir = 'results'
     os.makedirs(output_dir, exist_ok=True)
 
-    # Base file name without suffix
     base_file_name = f"{result_data['dataset_name']}"
-
-    # Determine the next available suffix
     file_index = 1
+
     while True:
         file_name = f"{base_file_name}_{file_index}.json"
+        file_name_csv = f"{base_file_name}_{file_index}.csv"
         file_path = os.path.join(output_dir, file_name)
+        file_name_csv = os.path.join(output_dir, file_name_csv)
         if not os.path.exists(file_path):
             break
         file_index += 1
 
-    # Save the results as a JSON file with the unique name
+    # Save the results as a JSON file with a unique name
     with open(file_path, 'w') as f:
         json.dump(result_data, f, indent=4)
 
-    print(f"Results saved to {file_path}")
+    imputed_data_original_scale.to_csv(file_name_csv, index=False)
+    logging.info(f"JSON results saved to {file_path}")
+    logging.info(f"Imputed CSV data saved to {file_name_csv}")
+
+
