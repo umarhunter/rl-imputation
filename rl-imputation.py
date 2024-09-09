@@ -73,7 +73,7 @@ def rl_imputation(args):
 
     # Preprocess the data
     if not toy_data:
-        complete_data, incomplete_data, scaler = data_loader.preprocess_data(incomplete_data, complete_data)
+        complete_data, incomplete_data, complete_data_original, scaler = data_loader.preprocess_data(complete_data, incomplete_data)
 
 
     # Check for missing values after preprocessing
@@ -151,7 +151,7 @@ def rl_imputation(args):
         model = DQN('MlpPolicy', env, verbose=1)
 
         # Train the model
-        model.learn(total_timesteps=episodes, log_interval=1000)
+        model.learn(total_timesteps=episodes, log_interval=5)
 
         # After training the DQN model, call result_handler to handle evaluation and saving
         result_handler(model, env, datasetid, episodes)

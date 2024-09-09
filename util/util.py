@@ -6,7 +6,8 @@ import os
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from stable_baselines3.common.evaluation import evaluate_policy
-from numpy import float64
+from numpy import float32
+
 
 def get_dataset_name(dataset_id):
     dataset_names = {
@@ -45,7 +46,7 @@ def generate_missing_df(df, missing_rate):
     for row_idx, col_idx in zip(*multi_dim_indices):
         if pd.api.types.is_integer_dtype(df_with_missing.iloc[:, col_idx]):
             # Convert integer column to float first if necessary
-            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float64)
+            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float32)
 
         # Set NaN for the chosen index
         df_with_missing.iat[row_idx, col_idx] = np.nan
@@ -62,6 +63,35 @@ def calculate_errors(imputed_data, actual_data):
 
     return mae, rmse
 
+def get_decimal_places(value):
+    """
+    Returns the number of decimal places in a value.
+    """
+    if pd.isna(value):  # Handle NaN values
+        return 0
+    if isinstance(value, float):
+        str_value = f'{value:.16f}'.rstrip('0')  # Convert float to string and strip trailing zeros
+        if '.' in str_value:
+            return len(str_value.split('.')[1])
+    return 0
+
+def round_to_match_original(imputed_data, complete_data):
+    """
+    Rounds the imputed values to match the precision of the original values in the complete_data.
+    Both dataframes should have the same shape and column names.
+    """
+    for row_idx in range(imputed_data.shape[0]):
+        for col_idx, col_name in enumerate(imputed_data.columns):
+            # Get the original value from the complete data
+            original_value = complete_data.iloc[row_idx, col_idx]
+
+            # Determine the precision of the original value
+            precision = get_decimal_places(original_value)
+
+            # Round the imputed value to match the original value's precision
+            imputed_data.iloc[row_idx, col_idx] = round(imputed_data.iloc[row_idx, col_idx], precision)
+
+    return imputed_data
 
 def result_handler(model, env, dataset_id, episodes):
     """
@@ -82,20 +112,20 @@ def result_handler(model, env, dataset_id, episodes):
     # Once training is done, inverse-transform the imputed data back to the original scale
     imputed_data_original_scale = env.unwrapped.finalize_imputation()
 
-    # Convert the final imputed data back to a DataFrame (if necessary)
-    imputed_data_original_scale = pd.DataFrame(imputed_data_original_scale, columns=env.unwrapped.incomplete_data.columns)
-
-    # Save the final imputed dataset in the original scale
-    imputed_data_original_scale.to_csv(f"results/imputed_data_original_{dataset_id}.csv", index=False)
-
+    imputed_data_original_scale = round_to_match_original(imputed_data_original_scale, env.unwrapped.complete_data)
+    env.unwrapped.complete_data.to_csv('complete_data.csv', index=False)
     # Compare with the original complete data
     comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data)
 
-    # Calculate Mean Absolute Error (MAE), Mean Squared Error (MSE), and Tolerance Match Rate
+    # Compute metrics
     mae = mean_absolute_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
     mse = mean_squared_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
-    tolerance = 0.05
-    tolerance_match_rate = np.mean(np.abs(env.unwrapped.complete_data.values - imputed_data_original_scale.values) <= tolerance) * 100
+
+    # adjsting tolerance to 0.001
+    tolerance = 0.001  # 0.1% tolerance
+    tolerance_match_rate = np.mean(
+        np.abs(env.unwrapped.complete_data.values - imputed_data_original_scale.values) <= tolerance
+    ) * 100
 
     # Print and log the evaluation metrics
     print(f"Mean Absolute Error: {mae}")
@@ -139,8 +169,7 @@ def result_handler(model, env, dataset_id, episodes):
     with open(file_path, 'w') as f:
         json.dump(result_data, f, indent=4)
 
+
     imputed_data_original_scale.to_csv(file_name_csv, index=False)
     logging.info(f"JSON results saved to {file_path}")
     logging.info(f"Imputed CSV data saved to {file_name_csv}")
-
-

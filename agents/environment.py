@@ -11,6 +11,7 @@ class ImputationEnv(gym.Env):
         self.complete_data = complete_data.copy()
         self.scaler = scaler  # the scaler for inverse transformation
         self.counter = 0
+
         # Find the missing indices
         self.missing_indices = np.argwhere(pd.isnull(self.incomplete_data).values)
         self.current_index = 0
@@ -24,13 +25,13 @@ class ImputationEnv(gym.Env):
         self.max_value = self.complete_data.max().max()
         self.num_actions = 100  # Increased from 10 to allow finer-grained actions
 
-
         # Define action and observation spaces
         self.observation_space = gym.spaces.Box(
             low=self.min_value, high=self.max_value, shape=(self.incomplete_data.shape[1],), dtype=np.float32
         )
+
+        # Increase the number of discrete actions for finer granularity
         self.action_space = gym.spaces.Discrete(self.num_actions)
-        #self.action_space = gym.spaces.Box(low=self.min_value, high=self.max_value, shape=(1,), dtype=np.float32)
 
     def reset(self, seed=None, options=None):
         # Set the random seed if provided
@@ -39,7 +40,6 @@ class ImputationEnv(gym.Env):
 
         # Reset the environment's internal state
         self.current_index = 0
-        self.counter = 0  # Reset any counters or additional state variables
 
         # Optionally, you could shuffle missing indices if the order should vary between episodes
         np.random.shuffle(self.missing_indices)
@@ -51,9 +51,7 @@ class ImputationEnv(gym.Env):
     def _get_observation(self):
         # Check if the current_index is within the valid range
         if self.current_index >= len(self.missing_indices):
-            # Return a default observation or handle it gracefully
-            # You might choose to return zeros or the last valid observation
-            #print(f"Warning: current_index {self.current_index} is out of bounds, returning default observation.")
+            # return a default observation or handle it
             default_obs = np.zeros(self.observation_space.shape, dtype=np.float32)
             return default_obs
 
@@ -89,13 +87,13 @@ class ImputationEnv(gym.Env):
         actual_value_scaled = self.complete_data.iloc[row, col]
 
         # Compare the imputed value and actual value in the scaled space
-        reward = -abs(imputed_value_scaled - actual_value_scaled)
+        reward = -abs(imputed_value_scaled - actual_value_scaled) ** 2
 
         # Store the imputed value in the incomplete data (in the scaled space)
         self.incomplete_data.iloc[row, col] = imputed_value_scaled
 
-        print(f"Imputed value (scaled): {imputed_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
-        print(f"Actual value (scaled): {actual_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
+        # print(f"Imputed value (scaled): {imputed_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
+        # print(f"Actual value (scaled): {actual_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
 
         self.current_index += 1
         done = self.current_index >= len(self.missing_indices)
@@ -120,7 +118,7 @@ class ImputationEnv(gym.Env):
             columns=self.incomplete_data.columns
         )
 
-        logging.info(f"First 5 rows of imputed data in original scale:\n{imputed_data_original_scale.head(5)}")
+        logging.info(f"First 5 rows of imputed data after inverse:\n{imputed_data_original_scale.head(5)}")
         return imputed_data_original_scale
 
     def render(self, mode='human'):

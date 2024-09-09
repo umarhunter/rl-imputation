@@ -61,32 +61,68 @@ def get_all_datasets():
 def load_dataset(datasetid, missing_rate=0.10):
     dataset = get_data(datasetid)
     df = dataset.data.original
-    missing_df = generate_missing_df(df, missing_rate)
 
-    missing_values_count = missing_df.isna().sum().sum()
-
+    # Hardcoded target columns for Breast Cancer Wisconsin dataset (drop first)
     if datasetid == 17:
-        target_column = ['ID', 'Diagnosis']  # Hardcoded for the Breast Cancer Wisconsin dataset
-        incomplete_data = missing_df.drop(columns=target_column)
-        complete_data = df.drop(columns=target_column)
+        target_column = ['ID', 'Diagnosis']
+
+        # Drop the target columns before generating missing values
+        df_dropped = df.drop(columns=target_column)
+        logging.info(f"Dropped target columns: {target_column}")
+
+        # Use df_dropped as complete_data (without missing values)
+        complete_data = df_dropped.copy()
+
+        # Generate missing values for incomplete_data using the original copy of df_dropped
+        incomplete_data = generate_missing_df(df_dropped, missing_rate)  # Generate missing values for incomplete_data
+
+        # Ensure complete_data contains no missing values
+        complete_values_count = complete_data.isna().sum().sum()
+        logging.info(f"The complete DataFrame contains {complete_values_count} missing values after load_dataset()")
+
+        # Check if incomplete_data contains missing values
+        missing_values_count = incomplete_data.isna().sum().sum()
+        logging.info(f"The incomplete DataFrame contains {missing_values_count} missing values after load_dataset()")
+
+        # Return both the complete and incomplete datasets
         return complete_data, incomplete_data
 
-    # Output result
+    # For other datasets, handle differently if needed (can keep this flexible for other cases)
+    missing_df = generate_missing_df(df, missing_rate)
+    missing_values_count = missing_df.isna().sum().sum()
     if missing_values_count > 0:
         logging.info(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
 
+
 def preprocess_data(complete_data, incomplete_data):
-    # Ensure complete_data is filled for fitting the scaler
-    complete_data_filled = complete_data.fillna(0)
+    complete_data_original = complete_data.copy()
 
-    # Fit the scaler on the complete data
+    # Check for missing values in complete_data
+    if complete_data.isnull().sum().sum() > 0:
+        raise ValueError(f"complete_data contains missing values: {complete_data.isnull().sum().sum()}")
+
+    # Log column names to ensure they match
+    logging.info(f"Columns in complete_data: {list(complete_data.columns)}")
+    logging.info(f"Columns in incomplete_data: {list(incomplete_data.columns)}")
+
+    # Fit the scaler on the complete_data
     scaler = MinMaxScaler()
-    scaler.fit(complete_data_filled)
+    scaler.fit(complete_data)
 
-    # Scale both complete_data and incomplete_data
-    complete_data_scaled = pd.DataFrame(scaler.transform(complete_data_filled), columns=complete_data.columns)
+    # Scale the complete_data
+    complete_data_scaled = pd.DataFrame(scaler.transform(complete_data), columns=complete_data.columns)
 
-    # IMPORTANT: Do not fill missing values in incomplete_data
-    incomplete_data_scaled = pd.DataFrame(scaler.transform(incomplete_data), columns=incomplete_data.columns)
+    # Scale the incomplete_data while preserving NaNs
+    incomplete_data_scaled = incomplete_data.copy()
 
-    return complete_data_scaled, incomplete_data_scaled, scaler
+    # Scale the incomplete data by temporarily filling NaNs (this is only for scaling)
+    transformed_incomplete_data = pd.DataFrame(scaler.transform(incomplete_data.fillna(0)), columns=incomplete_data.columns)
+
+    # Apply the mask to put scaled values back in non-NaN locations
+    non_nan_mask = incomplete_data.notna()  # Mask to detect where values are not NaN
+    incomplete_data_scaled[non_nan_mask] = transformed_incomplete_data[non_nan_mask]
+
+    # Return the scaled complete_data, scaled incomplete_data, and the scaler
+    return complete_data_scaled, incomplete_data_scaled, complete_data_original, scaler
+
+
