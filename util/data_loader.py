@@ -101,9 +101,9 @@ def preprocess_data(complete_data, incomplete_data):
     if complete_data.isnull().sum().sum() > 0:
         raise ValueError(f"complete_data contains missing values: {complete_data.isnull().sum().sum()}")
 
-    # Log column names to ensure they match
-    logging.info(f"Columns in complete_data: {list(complete_data.columns)}")
-    logging.info(f"Columns in incomplete_data: {list(incomplete_data.columns)}")
+    # # Log column names to ensure they match
+    # logging.info(f"Columns in complete_data: {list(complete_data.columns)}")
+    # logging.info(f"Columns in incomplete_data: {list(incomplete_data.columns)}")
 
     # Fit the scaler on the complete_data
     scaler = MinMaxScaler()
@@ -122,7 +122,6 @@ def preprocess_data(complete_data, incomplete_data):
     non_nan_mask = incomplete_data.notna()  # Mask to detect where values are not NaN
     incomplete_data_scaled[non_nan_mask] = transformed_incomplete_data[non_nan_mask]
 
-    # Return the scaled complete_data, scaled incomplete_data, and the scaler
     return complete_data_scaled, incomplete_data_scaled, complete_data_original, scaler
 
 

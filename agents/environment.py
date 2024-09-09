@@ -5,15 +5,16 @@ import pandas as pd
 
 
 class ImputationEnv(gym.Env):
-    def __init__(self, incomplete_data, complete_data, scaler):
+    def __init__(self, incomplete_data_scaled, complete_data_scaled, complete_data_original, scaler):
         super(ImputationEnv, self).__init__()
-        self.incomplete_data = incomplete_data.copy()
-        self.complete_data = complete_data.copy()
+        self.incomplete_data_scaled = incomplete_data_scaled.copy()
+        self.complete_data_scaled = complete_data_scaled.copy()
+        self.complete_data_original = complete_data_original.copy()
         self.scaler = scaler  # the scaler for inverse transformation
         self.counter = 0
 
         # Find the missing indices
-        self.missing_indices = np.argwhere(pd.isnull(self.incomplete_data).values)
+        self.missing_indices = np.argwhere(pd.isnull(self.incomplete_data_scaled).values)
         self.current_index = 0
 
         # Check if there are missing values
@@ -21,13 +22,13 @@ class ImputationEnv(gym.Env):
             raise ValueError("No missing values found in the dataset for imputation.")
 
         # Define the range of possible actions
-        self.min_value = self.complete_data.min().min()
-        self.max_value = self.complete_data.max().max()
+        self.min_value = self.complete_data_scaled.min().min()
+        self.max_value = self.complete_data_scaled.max().max()
         self.num_actions = 100  # Increased from 10 to allow finer-grained actions
 
         # Define action and observation spaces
         self.observation_space = gym.spaces.Box(
-            low=self.min_value, high=self.max_value, shape=(self.incomplete_data.shape[1],), dtype=np.float32
+            low=self.min_value, high=self.max_value, shape=(self.incomplete_data_scaled.shape[1],), dtype=np.float32
         )
 
         # Increase the number of discrete actions for finer granularity
@@ -58,7 +59,7 @@ class ImputationEnv(gym.Env):
         # Proceed with normal observation retrieval if the index is valid
         row, col = self.missing_indices[self.current_index]
 
-        obs = self.incomplete_data.iloc[[row]].fillna(0).infer_objects(copy=False)
+        obs = self.incomplete_data_scaled.iloc[[row]].fillna(0).infer_objects(copy=False)
         obs = self.scaler.transform(obs)[0]
         return obs.astype(np.float32)
 
@@ -84,13 +85,13 @@ class ImputationEnv(gym.Env):
         imputed_value_scaled = action_value  # The action value is in the scaled space
 
         # Get the actual scaled value from complete_data (already scaled)
-        actual_value_scaled = self.complete_data.iloc[row, col]
+        actual_value_scaled = self.complete_data_scaled.iloc[row, col]
 
         # Compare the imputed value and actual value in the scaled space
         reward = -abs(imputed_value_scaled - actual_value_scaled) ** 2
 
         # Store the imputed value in the incomplete data (in the scaled space)
-        self.incomplete_data.iloc[row, col] = imputed_value_scaled
+        self.incomplete_data_scaled.iloc[row, col] = imputed_value_scaled
 
         # print(f"Imputed value (scaled): {imputed_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
         # print(f"Actual value (scaled): {actual_value_scaled} at row: {row}, column: {self.incomplete_data.columns[col]}")
@@ -103,19 +104,19 @@ class ImputationEnv(gym.Env):
 
     def finalize_imputation(self):
         """Inverse transform the scaled data back to the original scale."""
-        logging.info(f"First 5 rows of incomplete data after completing imputation:\n{self.incomplete_data.head(5)}")
+        logging.info(f"First 5 rows of incomplete data after completing imputation:\n{self.incomplete_data_scaled.head(5)}")
 
         # Ensure the data structure is consistent with what the scaler was fitted on
-        if self.incomplete_data.shape != self.complete_data.shape:
+        if self.incomplete_data_scaled.shape != self.complete_data_scaled.shape:
             raise ValueError("Shape of incomplete data does not match complete data for inverse transformation.")
 
         # Fill NaNs temporarily and apply inverse transform
-        incomplete_data_filled = self.incomplete_data.fillna(0)
+        incomplete_data_filled = self.incomplete_data_scaled.fillna(0)
 
         # Apply inverse transform to the scaled data
         imputed_data_original_scale = pd.DataFrame(
             self.scaler.inverse_transform(incomplete_data_filled),
-            columns=self.incomplete_data.columns
+            columns=self.incomplete_data_scaled.columns
         )
 
         logging.info(f"First 5 rows of imputed data after inverse:\n{imputed_data_original_scale.head(5)}")

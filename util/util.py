@@ -63,6 +63,7 @@ def calculate_errors(imputed_data, actual_data):
 
     return mae, rmse
 
+
 def get_decimal_places(value):
     """
     Returns the number of decimal places in a value.
@@ -70,28 +71,31 @@ def get_decimal_places(value):
     if pd.isna(value):  # Handle NaN values
         return 0
     if isinstance(value, float):
-        str_value = f'{value:.16f}'.rstrip('0')  # Convert float to string and strip trailing zeros
-        if '.' in str_value:
-            return len(str_value.split('.')[1])
+        decimals = abs(np.floor(np.log10(np.abs(value)))) if value != 0 else 0
+        return int(decimals)
     return 0
 
-def round_to_match_original(imputed_data, complete_data):
+
+def truncate_to_match_original(imputed_data, complete_data_original):
     """
-    Rounds the imputed values to match the precision of the original values in the complete_data.
+    Truncates the imputed values to match the precision of the original values in the complete_data.
     Both dataframes should have the same shape and column names.
     """
     for row_idx in range(imputed_data.shape[0]):
         for col_idx, col_name in enumerate(imputed_data.columns):
             # Get the original value from the complete data
-            original_value = complete_data.iloc[row_idx, col_idx]
+            original_value = complete_data_original.iloc[row_idx, col_idx]
 
             # Determine the precision of the original value
-            precision = get_decimal_places(original_value)
+            precision = get_decimal_places(original_value) + 1
 
-            # Round the imputed value to match the original value's precision
-            imputed_data.iloc[row_idx, col_idx] = round(imputed_data.iloc[row_idx, col_idx], precision)
+            # Truncate the imputed value to match the original value's precision
+            imputed_value = imputed_data.iloc[row_idx, col_idx]
+            truncated_value = np.floor(imputed_value * 10 ** precision) / 10 ** precision
+            imputed_data.iloc[row_idx, col_idx] = truncated_value
 
     return imputed_data
+
 
 def result_handler(model, env, dataset_id, episodes):
     """
@@ -112,19 +116,28 @@ def result_handler(model, env, dataset_id, episodes):
     # Once training is done, inverse-transform the imputed data back to the original scale
     imputed_data_original_scale = env.unwrapped.finalize_imputation()
 
-    imputed_data_original_scale = round_to_match_original(imputed_data_original_scale, env.unwrapped.complete_data)
-    env.unwrapped.complete_data.to_csv('complete_data.csv', index=False)
+    imputed_data_original_scale = truncate_to_match_original(imputed_data_original_scale,
+                                                             env.unwrapped.complete_data_original)
+
+    # Debug: Check if rounding is happening
+    print("First 5 rows of imputed data after rounding:")
+    print(imputed_data_original_scale.head())
+
+    print("First 5 rows of complete data:")
+    print(env.unwrapped.complete_data_original.head())
+
+    env.unwrapped.complete_data_original.to_csv('complete_data_original.csv', index=False)
     # Compare with the original complete data
-    comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data)
+    comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data_original)
 
     # Compute metrics
-    mae = mean_absolute_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
-    mse = mean_squared_error(env.unwrapped.complete_data.values, imputed_data_original_scale.values)
+    mae = mean_absolute_error(env.unwrapped.complete_data_original.values, imputed_data_original_scale.values)
+    mse = mean_squared_error(env.unwrapped.complete_data_original.values, imputed_data_original_scale.values)
 
     # adjsting tolerance to 0.001
     tolerance = 0.001  # 0.1% tolerance
     tolerance_match_rate = np.mean(
-        np.abs(env.unwrapped.complete_data.values - imputed_data_original_scale.values) <= tolerance
+        np.abs(env.unwrapped.complete_data_original.values - imputed_data_original_scale.values) <= tolerance
     ) * 100
 
     # Print and log the evaluation metrics
@@ -168,7 +181,6 @@ def result_handler(model, env, dataset_id, episodes):
     # Save the results as a JSON file with a unique name
     with open(file_path, 'w') as f:
         json.dump(result_data, f, indent=4)
-
 
     imputed_data_original_scale.to_csv(file_name_csv, index=False)
     logging.info(f"JSON results saved to {file_path}")

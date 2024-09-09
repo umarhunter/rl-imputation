@@ -81,9 +81,9 @@ def rl_imputation(args):
         f"Number of missing data in incomplete_data after preprocessing: {incomplete_data.isnull().sum().sum()}")
 
     logging.info("Creating Imputation Environment.")
-    env = ImputationEnvironment(incomplete_data, complete_data)
 
     if method == 'qlearning':
+        env = ImputationEnvironment(incomplete_data, complete_data)
         logging.info("Using Q-Learning approach.")
         agent = QLearningAgent(env)
         agent.train(episodes=episodes)
@@ -109,6 +109,8 @@ def rl_imputation(args):
         print(f"Similarity Percentage: {similarity_percentage:.2f}%")
 
     elif method == 'customdqlearning':
+        env = ImputationEnvironment(incomplete_data, complete_data)
+
         logging.info("Using custom Deep Q-Learning approach.")
         state_size = incomplete_data.size
         action_size = max(len(env.get_possible_actions(col)) for col in range(incomplete_data.shape[1]))
@@ -143,12 +145,17 @@ def rl_imputation(args):
         complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean
 
         # Create the environment
-        env = ImputationEnv(incomplete_data, complete_data, scaler)
+        env = ImputationEnv(incomplete_data, complete_data, complete_data_original, scaler)
         env = Monitor(env)  # Wrapper for monitoring
         env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
         # Define the DQN model
-        model = DQN('MlpPolicy', env, verbose=1)
+        model = DQN('MlpPolicy',
+                    env,
+                    learning_rate=0.0001,
+                    batch_size=64,
+                    buffer_size=2000000,
+                    verbose=1)
 
         # Train the model
         model.learn(total_timesteps=episodes, log_interval=5)
