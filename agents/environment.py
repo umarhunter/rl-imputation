@@ -106,21 +106,31 @@ class ImputationEnv(gym.Env):
         """Inverse transform the scaled data back to the original scale."""
         logging.info(f"First 5 rows of incomplete data after completing imputation:\n{self.incomplete_data_scaled.head(5)}")
 
-        # Ensure the data structure is consistent with what the scaler was fitted on
-        if self.incomplete_data_scaled.shape != self.complete_data_scaled.shape:
-            raise ValueError("Shape of incomplete data does not match complete data for inverse transformation.")
+        # Ensure we apply inverse transformation to non-NaN values only
+        imputed_data = self.incomplete_data_scaled.copy()
 
-        # Fill NaNs temporarily and apply inverse transform
-        incomplete_data_filled = self.incomplete_data_scaled.fillna(0)
+        # Create a mask for NaN values
+        nan_mask = self.incomplete_data_scaled.isna()
 
-        # Apply inverse transform to the scaled data
-        imputed_data_original_scale = pd.DataFrame(
-            self.scaler.inverse_transform(incomplete_data_filled),
-            columns=self.incomplete_data_scaled.columns
-        )
+        # Apply inverse transformation row by row
+        for row_idx in range(imputed_data.shape[0]):
+            # Boolean mask for non-NaN values in the current row
+            non_nan_mask = ~nan_mask.iloc[row_idx]
 
-        logging.info(f"First 5 rows of imputed data after inverse:\n{imputed_data_original_scale.head(5)}")
-        return imputed_data_original_scale
+            # Convert boolean mask to integer position indices
+            valid_columns = np.where(non_nan_mask)[0]
+
+            if len(valid_columns) > 0:  # Ensure there's at least one non-NaN value to transform
+                row_values = imputed_data.iloc[row_idx, valid_columns].values.reshape(1, -1)
+                transformed_row = self.scaler.inverse_transform(row_values)[0]
+
+                # Place back the inverse-transformed values into the imputed_data DataFrame
+                imputed_data.iloc[row_idx, valid_columns] = transformed_row
+
+        logging.info(f"First 5 rows of imputed data after inverse:\n{imputed_data.head(5)}")
+
+        return imputed_data
+
 
     def render(self, mode='human'):
         pass

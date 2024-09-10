@@ -59,11 +59,12 @@ def get_all_datasets():
 
 
 def load_dataset(datasetid, missing_rate=0.10):
-    dataset = get_data(datasetid)
-    df = dataset.data.original
-
+    # dataset = get_data(datasetid)
+    # df = dataset.data.original
+    df = pd.read_csv("data/breast_cancer_wisconsin.csv")
     # Hardcoded target columns for Breast Cancer Wisconsin dataset (drop first)
     if datasetid == 17:
+        df = pd.read_csv("data/breast_cancer_wisconsin.csv")
         target_column = ['ID', 'Diagnosis']
 
         # Drop the target columns before generating missing values

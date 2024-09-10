@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import json
 import os
+import math
 
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from stable_baselines3.common.evaluation import evaluate_policy
@@ -76,23 +77,21 @@ def get_decimal_places(value):
     return 0
 
 
-def truncate_to_match_original(imputed_data, complete_data_original):
-    """
-    Truncates the imputed values to match the precision of the original values in the complete_data.
-    Both dataframes should have the same shape and column names.
-    """
-    for row_idx in range(imputed_data.shape[0]):
-        for col_idx, col_name in enumerate(imputed_data.columns):
-            # Get the original value from the complete data
-            original_value = complete_data_original.iloc[row_idx, col_idx]
+def truncate_to_match_original(imputed_data, original_data):
+    # Iterate through rows and columns, truncating each value to match the original precision
+    for col in imputed_data.columns:
+        original_column = original_data[col]
 
-            # Determine the precision of the original value
-            precision = get_decimal_places(original_value) + 1
+        def truncate(value, decimals):
+            factor = 10 ** decimals
+            return math.trunc(value * factor) / factor
 
-            # Truncate the imputed value to match the original value's precision
-            imputed_value = imputed_data.iloc[row_idx, col_idx]
-            truncated_value = np.floor(imputed_value * 10 ** precision) / 10 ** precision
-            imputed_data.iloc[row_idx, col_idx] = truncated_value
+        # Apply truncation for each value, matching the precision of the corresponding value in the original data
+        imputed_data[col] = imputed_data[col].apply(
+            lambda x, i: truncate(x, len(str(original_column.iloc[i]).split('.')[-1])
+            if '.' in str(original_column.iloc[i]) else 0),
+            args=(range(len(original_column)),)  # Use the index directly
+        )
 
     return imputed_data
 
@@ -119,16 +118,13 @@ def result_handler(model, env, dataset_id, episodes):
     imputed_data_original_scale = truncate_to_match_original(imputed_data_original_scale,
                                                              env.unwrapped.complete_data_original)
 
-    # Debug: Check if rounding is happening
-    print("First 5 rows of imputed data after rounding:")
+    print("First 5 rows of imputed data after rounding/truncating:")
     print(imputed_data_original_scale.head())
 
     print("First 5 rows of complete data:")
     print(env.unwrapped.complete_data_original.head())
 
     env.unwrapped.complete_data_original.to_csv('complete_data_original.csv', index=False)
-    # Compare with the original complete data
-    comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data_original)
 
     # Compute metrics
     mae = mean_absolute_error(env.unwrapped.complete_data_original.values, imputed_data_original_scale.values)
@@ -144,6 +140,9 @@ def result_handler(model, env, dataset_id, episodes):
     print(f"Mean Absolute Error: {mae}")
     print(f"Mean Squared Error: {mse}")
     print(f"Tolerance-Based Match Rate (±{tolerance}): {tolerance_match_rate:.2f}%")
+
+    # Compare with the original complete data
+    comparison = imputed_data_original_scale.compare(env.unwrapped.complete_data_original)
 
     # Calculate similarity percentage
     similarity_percentage = 100 * (1 - comparison.shape[0] / imputed_data_original_scale.size)
@@ -182,6 +181,6 @@ def result_handler(model, env, dataset_id, episodes):
     with open(file_path, 'w') as f:
         json.dump(result_data, f, indent=4)
 
-    imputed_data_original_scale.to_csv(file_name_csv, index=False)
+    imputed_data_original_scale.to_csv(file_name_csv, float_format='%.4f', index=False)
     logging.info(f"JSON results saved to {file_path}")
     logging.info(f"Imputed CSV data saved to {file_name_csv}")

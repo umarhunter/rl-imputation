@@ -18,6 +18,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv
 
+#pd.set_option('display.float_format', lambda x: '%.4f' % x)
 pd.set_option('future.no_silent_downcasting', True)
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -153,9 +154,28 @@ def rl_imputation(args):
         model = DQN('MlpPolicy',
                     env,
                     learning_rate=0.0001,
-                    batch_size=64,
                     buffer_size=2000000,
-                    verbose=1)
+                    learning_starts=100,
+                    batch_size=96,
+                    tau=1.0,
+                    gamma=0.99,
+                    train_freq=4,
+                    gradient_steps=1,
+                    replay_buffer_class=None,
+                    replay_buffer_kwargs=None,
+                    optimize_memory_usage=False,
+                    target_update_interval=10000,
+                    exploration_fraction=0.1,
+                    exploration_initial_eps=1.0,
+                    exploration_final_eps=0.05,
+                    max_grad_norm=10,
+                    stats_window_size=100,
+                    tensorboard_log='tensorboard_logs',
+                    policy_kwargs=None,
+                    verbose=0,
+                    seed=None,
+                    device='auto',
+                    _init_setup_model=True)
 
         # Train the model
         model.learn(total_timesteps=episodes, log_interval=5)
