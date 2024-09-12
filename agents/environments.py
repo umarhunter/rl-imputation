@@ -4,9 +4,9 @@ import numpy as np
 import pandas as pd
 
 
-class ImputationEnv(gym.Env):
+class DQNImputationEnvironment(gym.Env):
     def __init__(self, incomplete_data_scaled, complete_data_scaled, complete_data_original, scaler):
-        super(ImputationEnv, self).__init__()
+        super(DQNImputationEnvironment, self).__init__()
         self.incomplete_data_scaled = incomplete_data_scaled.copy()
         self.complete_data_scaled = complete_data_scaled.copy()
         self.complete_data_original = complete_data_original.copy()
@@ -133,71 +133,3 @@ class ImputationEnv(gym.Env):
         pass
 
 
-class ImputationQEnv(gym.Env):
-    def __init__(self, complete_data, incomplete_data, num_bins):
-        super(ImputationQEnv, self).__init__()
-
-        # Store data
-        self.complete_data = complete_data
-        self.incomplete_data = incomplete_data
-        self.num_bins = num_bins
-
-        # Discretize observation space (e.g., 10 bins for each feature)
-        self.observation_space = gym.spaces.Discrete(num_bins)
-
-        # Define discrete action space (e.g., for imputation choices)
-        self.action_space = gym.spaces.Discrete(10)  # Example of imputation actions
-
-        # Define Q-table (state-action pair table)
-        self.q_table = np.zeros((self.observation_space.n, self.action_space.n))
-
-        # Initialize episode state
-        self.current_index = 0  # Track index of missing values
-
-    def step(self, action):
-        # Retrieve the current state (e.g., missing value row/col)
-        row, col = self.get_current_missing_value()
-
-        # Perform the imputation (take action)
-        imputed_value = self.get_imputed_value(action)
-        self.incomplete_data.iloc[row, col] = imputed_value
-
-        # Calculate reward based on accuracy of imputation
-        actual_value = self.complete_data.iloc[row, col]
-        reward = -abs(imputed_value - actual_value)  # Negative absolute error as reward
-
-        # Move to the next state
-        self.current_index += 1
-
-        # Check if we have imputed all values (done)
-        done = self.current_index >= len(self.missing_indices)
-
-        # Return new state, reward, and done flag
-        next_state = self.get_current_state()
-        return next_state, reward, done, {}
-
-    def reset(self):
-        # Reset environment and return initial state
-        self.current_index = 0  # Reset to the first missing value
-        return self.get_current_state()
-
-    def get_current_state(self):
-        # Retrieve current state (e.g., discretized missing value index)
-        row, col = self.get_current_missing_value()
-        state = self.discretize_value(self.incomplete_data.iloc[row, col])
-        return state
-
-    def get_current_missing_value(self):
-        # Return the row/col of the current missing value to impute
-        return self.missing_indices[self.current_index]
-
-    def get_imputed_value(self, action):
-        # Convert discrete action into imputed value
-        min_value = self.complete_data.min().min()
-        max_value = self.complete_data.max().max()
-        return min_value + (action / (self.action_space.n - 1)) * (max_value - min_value)
-
-    def discretize_value(self, value):
-        # Discretize continuous value into bins for tabular Q-learning
-        return int(np.digitize(value, np.linspace(self.complete_data.min().min(), self.complete_data.max().max(),
-                                                  self.num_bins)))

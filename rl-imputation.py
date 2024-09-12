@@ -9,7 +9,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Import classes and utility functions from external files
-from agents.environment import ImputationEnvironment, ImputationEnv
+from agents.environments import DQNImputationEnvironment
 from agents.qlearning import QLearningAgent
 from agents.custom_dqlearning import DQNAgent
 from util import data_loader
@@ -109,35 +109,6 @@ def rl_imputation(args):
         print(imputed_data)
         print(f"Similarity Percentage: {similarity_percentage:.2f}%")
 
-    elif method == 'customdqlearning':
-        env = ImputationEnvironment(incomplete_data, complete_data)
-
-        logging.info("Using custom Deep Q-Learning approach.")
-        state_size = incomplete_data.size
-        action_size = max(len(env.get_possible_actions(col)) for col in range(incomplete_data.shape[1]))
-        agent = DQNAgent(env, state_size=state_size, action_size=action_size)  # Pass env to DQNAgent
-
-        for e in range(episodes):
-            state = env.reset()
-            state = state.values.flatten()
-            done = False
-            while not done:
-                position = random.choice(env.missing_indices)
-                position_col_index = position[1]
-                action_index, action_value = agent.act(state, position_col_index)
-                next_state, reward, done = env.step(action_value, position)
-                next_state = next_state.values.flatten()
-                agent.remember(state, action_index, reward, next_state, done, position_col_index)
-                state = next_state
-            # Log progress every 'log_interval' episodes
-            if (e + 1) % 5000 == 0:
-                logging.info(f"Episode {e + 1}/{episodes} completed with unknown steps.")
-            agent.replay()
-
-        agent.save("results/dqn_model.pth")
-        imputed_data = env.state
-        print(imputed_data)
-
     elif method == 'dqlearning':
         logging.info("Using Deep Q-Learning approach.")
 
@@ -146,7 +117,7 @@ def rl_imputation(args):
         complete_data.replace("?", np.nan, inplace=True)  # Ensure data is clean
 
         # Create the environment
-        env = ImputationEnv(incomplete_data, complete_data, complete_data_original, scaler)
+        env = DQNImputationEnvironment(incomplete_data, complete_data, complete_data_original, scaler)
         env = Monitor(env)  # Wrapper for monitoring
         env = DummyVecEnv([lambda: env])  # Vectorize the environment
 
