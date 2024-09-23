@@ -9,8 +9,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 # Import classes and utility functions from external files
-from agents.environments import DQNImputationEnvironment
-from agents.qlearning import QLearningAgent
+from agents.dqlearning import DQNImputationEnvironment
+from agents.qlearning import QImputationEnvironment
 from agents.custom_dqlearning import DQNAgent
 from util import data_loader
 from util.util import result_handler
