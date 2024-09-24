@@ -1,11 +1,63 @@
 import logging
 import random
+import pickle
+import os
 from collections import defaultdict
 import numpy as np
 import pandas as pd
+import torch
+
+from torch.utils.tensorboard import SummaryWriter
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def save_checkpoint(agent, episode, checkpoint_dir="checkpoints"):
+    if not os.path.exists(checkpoint_dir):
+        os.makedirs(checkpoint_dir)
+    checkpoint = {
+        'q_table': dict(agent.q_table),
+        'episode': episode,
+        'epsilon': agent.epsilon
+    }
+    torch.save(checkpoint, os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth"))
+    logging.info(f"Checkpoint saved at episode {episode}")
+
+
+def load_checkpoint(checkpoint_dir="checkpoints", checkpoint_file=None):
+    if checkpoint_file is None:
+        checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pth")]
+        if not checkpoint_files:
+            return None
+        checkpoint_files.sort(key=lambda f: int(f.split('_')[1].split('.')[0]))
+        checkpoint_file = checkpoint_files[-1]
+
+    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_file)
+    checkpoint = torch.load(checkpoint_path)
+    logging.info(f"Checkpoint loaded from {checkpoint_file}")
+
+    # Convert q_table back to defaultdict
+    q_table = defaultdict(lambda: defaultdict(float), checkpoint['q_table'])
+    return {
+        'q_table': q_table,
+        'episode': checkpoint['episode'],
+        'epsilon': checkpoint['epsilon']
+    }
+
+
+
+def calculate_metrics(env, agent):
+    # Get the imputed data (after training)
+    imputed_data = env.state
+
+    # Calculate MAE and RMSE between imputed data and complete data
+    mae = mean_absolute_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
+    mse = mean_squared_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
+    rmse = np.sqrt(mse)
+
+    return mae, rmse
 
 def get_toy_data():
     # Sample Data
@@ -91,7 +143,7 @@ def load_dataset(datasetid, missing_rate=0.10):
         logging.info(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
 
 class QLearningAgent:
-    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=0.1, epsilon_decay=0.995, epsilon_min=0.01):
+    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
         logging.info("Initializing Q-Learning Agent")
         self.env = env
         self.alpha = alpha
@@ -126,26 +178,86 @@ class QLearningAgent:
         q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
         self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
 
-    def train(self, episodes, log_interval=100):
-        logging.info(f"Training the Q-Learning Agent for {episodes} episodes.")
-        for episode in range(episodes):
-            state = self.env.reset()
-            done = False
-            step = 0
-            while not done:
-                position = random.choice(self.env.missing_indices)
-                action = self.choose_action(position)
-                next_state, reward, done = self.env.step(action, position)
-                next_position = position  # Simplified state transition
-                self.learn(position, action, reward, next_position)
-                step += 1
+    def train_with_logging(self, episodes=10000, log_interval=100, log_dir="./logs",
+                           checkpoint_dir="./checkpoints", resume=False, patience=50, delta=0.001):
+        writer = SummaryWriter(log_dir)
+        start_episode = 1
+        best_rmse = float('inf')
+        patience_counter = 0
 
-            # Decay epsilon
-            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+        if resume:
+            checkpoint = load_checkpoint(checkpoint_dir)
+            if checkpoint:
+                self.q_table = checkpoint['q_table']
+                self.epsilon = checkpoint['epsilon']
+                start_episode = checkpoint['episode'] + 1
 
-            if (episode + 1) % log_interval == 0:
-                logging.info(f"Episode {episode + 1}/{episodes} completed with {step} steps.")
-                logging.info(f"Epsilon after episode {episode + 1}: {self.epsilon}")
+        try:
+            for episode in range(start_episode, episodes + 1):
+                state = self.env.reset()
+                done = False
+                step = 0
+                while not done:
+                    position = random.choice(self.env.missing_indices)
+                    action = self.choose_action(position)
+                    next_state, reward, done = self.env.step(action, position)
+                    self.learn(position, action, reward, next_state)
+                    state = next_state
+                    step += 1
+
+                    # Decay epsilon
+                    self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+
+                if (episode) % log_interval == 0:
+                    logging.info(f"Episode {episode}/{episodes} completed with {step} steps.")
+
+                    writer.add_scalar("Episode/Steps", step, episode)
+                    writer.add_scalar("Episode/Epsilon", self.epsilon, episode)
+
+                    mae, rmse = calculate_metrics(self.env, self)
+                    logging.info(f"Episode {episode}: MAE = {mae:.6f}, RMSE = {rmse:.6f}, EPSILON: {self.epsilon:.6f}")
+                    writer.add_scalar("Metrics/MAE", mae, episode)
+                    writer.add_scalar("Metrics/RMSE", rmse, episode)
+
+                    if rmse < best_rmse - delta:
+                        logging.info(f"RMSE improved from {best_rmse:.6f} to {rmse:.6f}. Resetting patience counter.")
+                        best_rmse = rmse
+                        patience_counter = 0
+                        save_checkpoint(self, episode, checkpoint_dir)
+                    else:
+                        patience_counter += 1
+                        logging.info(f"RMSE did not improve. Patience counter: {patience_counter}/{patience}")
+
+                    if patience_counter >= patience:
+                        logging.info(f"Stopping early at episode {episode} due to lack of improvement.")
+                        break
+
+        except KeyboardInterrupt:
+            logging.info("Training interrupted. Saving final checkpoint.")
+            save_checkpoint(self, episode, checkpoint_dir)
+        finally:
+            writer.close()
+
+    # def train(self, episodes, log_interval=100):
+    #     logging.info(f"Training the Q-Learning Agent for {episodes} episodes.")
+    #     for episode in range(episodes):
+    #         state = self.env.reset()
+    #         done = False
+    #         step = 0
+    #         while not done:
+    #             position = random.choice(self.env.missing_indices)
+    #             action = self.choose_action(position)
+    #             next_state, reward, done = self.env.step(action, position)
+    #             next_position = position  # Simplified state transition
+    #             self.learn(position, action, reward, next_position)
+    #             step += 1
+    #
+    #         # Decay epsilon
+    #         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+    #
+    #         if (episode + 1) % log_interval == 0:
+    #             logging.info(f"Episode {episode + 1}/{episodes} completed with {step} steps.")
+    #             logging.info(f"Epsilon after episode {episode + 1}: {self.epsilon}")
 
 class ImputationEnvironment:
     def __init__(self, incomplete_data, complete_data):
@@ -172,10 +284,10 @@ class ImputationEnvironment:
 complete_data, incomplete_data = load_dataset(17, 0.10)
 # Initialize the environment and the Q-learning agent
 env = ImputationEnvironment(incomplete_data, complete_data)
-agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=0.1)
+agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
 
 # Train the agent
-agent.train(episodes=20000, log_interval=100)
+agent.train_with_logging(episodes=1000, log_interval=50, patience=100)
 
 # Signal completion of training
 logging.info("Training completed.")
