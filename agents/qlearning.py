@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 
+from ucimlrepo import fetch_ucirepo, list_available_datasets
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
@@ -14,7 +15,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-def save_checkpoint(agent, episode, checkpoint_dir="checkpoints"):
+def save_checkpoint(agent, episode, imputed_data, checkpoint_dir="checkpoints"):
     if not os.path.exists(checkpoint_dir):
         os.makedirs(checkpoint_dir)
     checkpoint = {
@@ -22,8 +23,11 @@ def save_checkpoint(agent, episode, checkpoint_dir="checkpoints"):
         'episode': episode,
         'epsilon': agent.epsilon
     }
-    torch.save(checkpoint, os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth"))
-    logging.info(f"Checkpoint saved at episode {episode}")
+    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth")
+    torch.save(checkpoint, checkpoint_path)
+    imputed_data_path = os.path.join(checkpoint_dir, f"checkpoint_{episode}.csv")
+    imputed_data.to_csv(imputed_data_path, index=False)
+    logging.info(f"Checkpoint saved at episode {episode} with CSV file.")
 
 
 def load_checkpoint(checkpoint_dir="checkpoints", checkpoint_file=None):
@@ -45,7 +49,6 @@ def load_checkpoint(checkpoint_dir="checkpoints", checkpoint_file=None):
         'episode': checkpoint['episode'],
         'epsilon': checkpoint['epsilon']
     }
-
 
 
 def calculate_metrics(env, agent):
@@ -76,9 +79,16 @@ def get_toy_data():
     })
     return complete_data, incomplete_data
 
+def preprocess_columns_for_missing(df):
+    """Preprocess columns by casting int64 columns to float64 to handle NaN values."""
+    for col in df.columns:
+        if pd.api.types.is_integer_dtype(df[col]):
+            df[col] = df[col].astype(np.float64)  # Convert int64 to float64
+    return df
+
 def generate_missing_df(df, missing_rate):
     """Introduce missing values randomly into the dataframe at the specified rate."""
-    df_with_missing = df.copy()
+    df_with_missing = preprocess_columns_for_missing(df)
 
     # Total number of elements in the dataframe
     total_elements = df_with_missing.size
@@ -95,52 +105,43 @@ def generate_missing_df(df, missing_rate):
     # Convert the flat indices to multi-dimensional indices
     multi_dim_indices = np.unravel_index(missing_indices, df_with_missing.shape)
 
-    # Assign NaN to the chosen indices
+    # Assign NaN to the missing indices
     for row_idx, col_idx in zip(*multi_dim_indices):
-        if pd.api.types.is_integer_dtype(df_with_missing.iloc[:, col_idx]):
-            # Convert integer column to float first if necessary
-            df_with_missing.iloc[:, col_idx] = df_with_missing.iloc[:, col_idx].astype(float64)
-
-        # Set NaN for the chosen index
         df_with_missing.iat[row_idx, col_idx] = np.nan
 
     return df_with_missing
 
-def load_dataset(datasetid, missing_rate=0.10):
-    # dataset = get_data(datasetid)
-    # df = dataset.data.original
-    df = pd.read_csv("breast_cancer_wisconsin.csv")
-    # Hardcoded target columns for Breast Cancer Wisconsin dataset (drop first)
-    if datasetid == 17:
-        df = pd.read_csv("breast_cancer_wisconsin.csv")
-        target_column = ['ID', 'Diagnosis']
+def load_dataset(datasetid, missing_rate=0.05):
+    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]
+    dataset = fetch_ucirepo(id=94)
+    df = dataset.data.original
 
-        # Drop the target columns before generating missing values
-        df_dropped = df.drop(columns=target_column)
-        logging.info(f"Dropped target columns: {target_column}")
+    # Drop the target columns before generating missing values
+    target_columns = dataset.metadata.target_col
+    logging.info(f"Target columns: {target_columns}")
 
-        # Use df_dropped as complete_data (without missing values)
-        complete_data = df_dropped.copy()
+    # Drop the target columns before generating missing values
+    df_dropped = df.drop(columns=target_columns)
+    logging.info(f"Dropped target columns: {target_columns}")
 
-        # Generate missing values for incomplete_data using the original copy of df_dropped
-        incomplete_data = generate_missing_df(df_dropped, missing_rate)  # Generate missing values for incomplete_data
+    # Use df_dropped as complete_data (without missing values)
+    complete_data = df_dropped.copy()
 
-        # Ensure complete_data contains no missing values
-        complete_values_count = complete_data.isna().sum().sum()
-        logging.info(f"The complete DataFrame contains {complete_values_count} missing values after load_dataset()")
+    # Generate missing values for incomplete_data using the original copy of df_dropped
+    incomplete_data = generate_missing_df(df_dropped, missing_rate)  # Generate missing values for incomplete_data
 
-        # Check if incomplete_data contains missing values
-        missing_values_count = incomplete_data.isna().sum().sum()
-        logging.info(f"The incomplete DataFrame contains {missing_values_count} missing values after load_dataset()")
+    # Ensure complete_data contains no missing values
+    complete_values_count = complete_data.isna().sum().sum()
+    logging.info(f"The complete DataFrame contains {complete_values_count} missing values after load_dataset()")
 
-        # Return both the complete and incomplete datasets
-        return complete_data, incomplete_data
+    # Check if incomplete_data contains missing values
+    missing_values_count = incomplete_data.isna().sum().sum()
+    logging.info(f"The incomplete DataFrame contains {missing_values_count} missing values after load_dataset()")
 
-    # For other datasets, handle differently if needed (can keep this flexible for other cases)
-    missing_df = generate_missing_df(df, missing_rate)
-    missing_values_count = missing_df.isna().sum().sum()
-    if missing_values_count > 0:
-        logging.info(f"The DataFrame contains {missing_values_count} missing values after load_dataset()")
+    # Return both the complete and incomplete datasets
+    return complete_data, incomplete_data
+
+
 
 class QLearningAgent:
     def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
@@ -183,6 +184,7 @@ class QLearningAgent:
         writer = SummaryWriter(log_dir)
         start_episode = 1
         best_rmse = float('inf')
+        best_mae = float('inf')
         patience_counter = 0
 
         if resume:
@@ -219,14 +221,16 @@ class QLearningAgent:
                     writer.add_scalar("Metrics/MAE", mae, episode)
                     writer.add_scalar("Metrics/RMSE", rmse, episode)
 
-                    if rmse < best_rmse - delta:
-                        logging.info(f"RMSE improved from {best_rmse:.6f} to {rmse:.6f}. Resetting patience counter.")
+                    if rmse < best_rmse - delta or mae < best_mae - delta:
+                        logging.info(
+                            f"Metrics improved. RMSE: {best_rmse:.6f} -> {rmse:.6f}, MAE: {best_mae:.6f} -> {mae:.6f}. Resetting patience counter.")
                         best_rmse = rmse
+                        best_mae = mae
                         patience_counter = 0
-                        save_checkpoint(self, episode, checkpoint_dir)
+                        save_checkpoint(self, episode, self.env.state, checkpoint_dir)
                     else:
                         patience_counter += 1
-                        logging.info(f"RMSE did not improve. Patience counter: {patience_counter}/{patience}")
+                        logging.info(f"Metrics did not improve. Patience counter: {patience_counter}/{patience}")
 
                     if patience_counter >= patience:
                         logging.info(f"Stopping early at episode {episode} due to lack of improvement.")
@@ -237,27 +241,6 @@ class QLearningAgent:
             save_checkpoint(self, episode, checkpoint_dir)
         finally:
             writer.close()
-
-    # def train(self, episodes, log_interval=100):
-    #     logging.info(f"Training the Q-Learning Agent for {episodes} episodes.")
-    #     for episode in range(episodes):
-    #         state = self.env.reset()
-    #         done = False
-    #         step = 0
-    #         while not done:
-    #             position = random.choice(self.env.missing_indices)
-    #             action = self.choose_action(position)
-    #             next_state, reward, done = self.env.step(action, position)
-    #             next_position = position  # Simplified state transition
-    #             self.learn(position, action, reward, next_position)
-    #             step += 1
-    #
-    #         # Decay epsilon
-    #         self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
-    #
-    #         if (episode + 1) % log_interval == 0:
-    #             logging.info(f"Episode {episode + 1}/{episodes} completed with {step} steps.")
-    #             logging.info(f"Epsilon after episode {episode + 1}: {self.epsilon}")
 
 class ImputationEnvironment:
     def __init__(self, incomplete_data, complete_data):
@@ -281,21 +264,15 @@ class ImputationEnvironment:
         """Return possible actions (values) for a column (excluding NaN)."""
         return self.complete_data.iloc[:, col].dropna().unique()
 
-complete_data, incomplete_data = load_dataset(17, 0.10)
-# Initialize the environment and the Q-learning agent
-env = ImputationEnvironment(incomplete_data, complete_data)
-agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+if __name__ == "__main__":
+    complete_data, incomplete_data = load_dataset(17, 0.05)
 
-# Train the agent
-agent.train_with_logging(episodes=1000, log_interval=50, patience=100)
+    # Initialize the environment and the Q-learning agent
+    env = ImputationEnvironment(incomplete_data, complete_data)
+    agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
 
-# Signal completion of training
-logging.info("Training completed.")
-logging.info(f"Complete Data: \n{complete_data}")
+    # train the agent
+    agent.train_with_logging(episodes=1000, log_interval=50, patience=15)
 
-logging.info("Training completed.")
-
-# Output the imputed data
-imputed_data = env.state
-# logging.info(f"Imputed Data: \n{imputed_data}")
-imputed_data.to_csv("imputed_data.csv", index=False)
+    # completed training
+    logging.info("Training completed.")

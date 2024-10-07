@@ -43,7 +43,7 @@ def compare_dataframes(df1, df2):
 original_df = pd.read_csv("breast_cancer_wisconsin.csv")
 target_column = ['ID', 'Diagnosis']
 original_df = original_df.drop(columns=target_column)
-imputed_df = pd.read_csv("imputed_data.csv")
+imputed_df = pd.read_csv("checkpoints/checkpoint_250.csv")
 
 differences = compare_dataframes(original_df, imputed_df)
 print(differences)
@@ -54,4 +54,4 @@ rmse = calculate_rmse(original_df, imputed_df)
 
 print(f"MAE: {mae}")
 print(f"MSE: {mse}")
-print(f"RMSE: {rmse}")
+print(f"RMSE: {rmse}")  

@@ -42,6 +42,7 @@ def get_id():
 
 
 def get_data(dataset_id, X=False, y=False, variable_info=False, metadata=False):
+    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]
     dataset = fetch_ucirepo(id=dataset_id)
     return dataset
 
