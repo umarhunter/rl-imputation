@@ -11,9 +11,16 @@ from ucimlrepo import fetch_ucirepo, list_available_datasets
 from torch.utils.tensorboard import SummaryWriter
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
+# Configure logging to write to both console and file
+log_filename = "training_log.log"
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Output to console
+        logging.FileHandler(log_filename, mode='w')  # Output to file
+    ]
+)
 
 def save_checkpoint(agent, episode, imputed_data, checkpoint_dir="checkpoints"):
     if not os.path.exists(checkpoint_dir):
@@ -220,14 +227,13 @@ class QLearningAgent:
                     logging.info(f"Episode {episode}: MAE = {mae:.6f}, RMSE = {rmse:.6f}, EPSILON: {self.epsilon:.6f}")
                     writer.add_scalar("Metrics/MAE", mae, episode)
                     writer.add_scalar("Metrics/RMSE", rmse, episode)
-
+                    save_checkpoint(self, episode, self.env.state, checkpoint_dir)
                     if rmse < best_rmse - delta or mae < best_mae - delta:
                         logging.info(
-                            f"Metrics improved. RMSE: {best_rmse:.6f} -> {rmse:.6f}, MAE: {best_mae:.6f} -> {mae:.6f}. Resetting patience counter.")
+                            f"Metrics improved for episode: {episode}. RMSE: {best_rmse:.6f} -> {rmse:.6f}, MAE: {best_mae:.6f} -> {mae:.6f}. Resetting patience counter.")
                         best_rmse = rmse
                         best_mae = mae
                         patience_counter = 0
-                        save_checkpoint(self, episode, self.env.state, checkpoint_dir)
                     else:
                         patience_counter += 1
                         logging.info(f"Metrics did not improve. Patience counter: {patience_counter}/{patience}")
@@ -235,6 +241,8 @@ class QLearningAgent:
                     if patience_counter >= patience:
                         logging.info(f"Stopping early at episode {episode} due to lack of improvement.")
                         break
+
+
 
         except KeyboardInterrupt:
             logging.info("Training interrupted. Saving final checkpoint.")
@@ -265,14 +273,26 @@ class ImputationEnvironment:
         return self.complete_data.iloc[:, col].dropna().unique()
 
 if __name__ == "__main__":
-    complete_data, incomplete_data = load_dataset(17, 0.05)
+    #dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]
+    dataset_ids = [59, 332, 350, 189, 484, 149]
+    missing_rate = 0.05  # Set missing rate for all datasets
 
-    # Initialize the environment and the Q-learning agent
-    env = ImputationEnvironment(incomplete_data, complete_data)
-    agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+    for dataset_id in dataset_ids:
+        logging.info(f"Processing dataset ID: {dataset_id}")
 
-    # train the agent
-    agent.train_with_logging(episodes=1000, log_interval=50, patience=15)
+        # Load the dataset
+        complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
 
-    # completed training
-    logging.info("Training completed.")
+        # Initialize the environment and the Q-learning agent
+        env = ImputationEnvironment(incomplete_data, complete_data)
+        agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+
+        # Define a specific checkpoint directory for each dataset
+        checkpoint_dir = f"./checkpoints/dataset_{dataset_id}"
+
+        # Train the agent and create checkpoints
+        agent.train_with_logging(episodes=250, log_interval=50, checkpoint_dir=checkpoint_dir, patience=15)
+
+        logging.info(f"Completed training for dataset ID: {dataset_id}")
+
+    logging.info("All datasets processed.")
