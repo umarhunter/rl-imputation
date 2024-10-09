@@ -150,7 +150,7 @@ def load_dataset(datasetid, missing_rate=0.05):
 
 
 
-class QLearningAgent:
+class RLImputer:
     def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
         logging.info("Initializing Q-Learning Agent")
         self.env = env
@@ -273,8 +273,7 @@ class ImputationEnvironment:
         return self.complete_data.iloc[:, col].dropna().unique()
 
 if __name__ == "__main__":
-    #dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]
-    dataset_ids = [59, 332, 350, 189, 484, 149]
+    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149] # all datasets
     missing_rate = 0.05  # Set missing rate for all datasets
 
     for dataset_id in dataset_ids:
@@ -285,7 +284,7 @@ if __name__ == "__main__":
 
         # Initialize the environment and the Q-learning agent
         env = ImputationEnvironment(incomplete_data, complete_data)
-        agent = QLearningAgent(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+        agent = RLImputer(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
 
         # Define a specific checkpoint directory for each dataset
         checkpoint_dir = f"./checkpoints/dataset_{dataset_id}"
