@@ -1,14 +1,16 @@
 import logging
 import random
-import pickle
 import os
 from collections import defaultdict
 import numpy as np
 import pandas as pd
 import torch
+import multiprocessing as mp
+import csv
 
 from ucimlrepo import fetch_ucirepo, list_available_datasets
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
+from sklearn.model_selection import train_test_split
 
 # Configure logging to write to both console and file
 log_filename = "training.log"
@@ -21,77 +23,32 @@ logging.basicConfig(
     ]
 )
 
-def save_checkpoint(agent, episode, imputed_data, checkpoint_dir="checkpoints"):
-    if not os.path.exists(checkpoint_dir):
-        os.makedirs(checkpoint_dir)
-    checkpoint = {
-        'q_table': dict(agent.q_table),
-        'episode': episode,
-        'epsilon': agent.epsilon
-    }
-    checkpoint_path = os.path.join(checkpoint_dir, f"checkpoint_{episode}.pth")
-    torch.save(checkpoint, checkpoint_path)
-    imputed_data_path = os.path.join(checkpoint_dir, f"checkpoint_{episode}.csv")
-    imputed_data.to_csv(imputed_data_path, index=False)
-    logging.info(f"Checkpoint saved at episode {episode} with CSV file.")
-
-
-def load_checkpoint(checkpoint_dir="checkpoints", checkpoint_file=None):
-    if checkpoint_file is None:
-        checkpoint_files = [f for f in os.listdir(checkpoint_dir) if f.endswith(".pth")]
-        if not checkpoint_files:
-            return None
-        checkpoint_files.sort(key=lambda f: int(f.split('_')[1].split('.')[0]))
-        checkpoint_file = checkpoint_files[-1]
-
-    checkpoint_path = os.path.join(checkpoint_dir, checkpoint_file)
-    checkpoint = torch.load(checkpoint_path)
-    logging.info(f"Checkpoint loaded from {checkpoint_file}")
-
-    # Convert q_table back to defaultdict
-    q_table = defaultdict(lambda: defaultdict(float), checkpoint['q_table'])
-    return {
-        'q_table': q_table,
-        'episode': checkpoint['episode'],
-        'epsilon': checkpoint['epsilon']
-    }
-
-
 def calculate_metrics(env, agent):
     # Get the imputed data (after training)
     imputed_data = env.state
 
-    # Check for NaN values before calculating MAE and RMSE
+    # Check for NaN values in complete_data and imputed_data
+    if env.complete_data.isna().sum().sum() > 0:
+        nan_counts = env.complete_data.isna().sum()  # Series with NaN counts per column
+        nan_columns = nan_counts[nan_counts > 0]  # Filter columns with NaNs
+        logging.error("NaN values found in complete_data:")
+        for col, count in nan_columns.items():
+            logging.error(f"Complete Data: Column '{col}': {count} NaN values")
+        return None, None  # Early exit if complete_data has NaNs
+
     if imputed_data.isna().sum().sum() > 0:
-            # Option 1: Return a failure metric or log it
-        # return None, None
-        
-        # Option 2: Fill NaN values with mean (conservative fallback)
-        imputed_data = imputed_data.fillna(imputed_data.mean())
+        nan_counts = env.complete_data.isna().sum()  # Series with NaN counts per column
+        nan_columns = nan_counts[nan_counts > 0]  # Filter columns with NaNs
+        logging.error("NaN values found in complete_data:")
+        for col, count in nan_columns.items():
+            logging.error(f"Imputed Data: Column '{col}': {count} NaN values")
+        return None, None  # Early exit if complete_data has NaNs
 
     # Calculate MAE and RMSE between imputed data and complete data
     mae = mean_absolute_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
     rmse = root_mean_squared_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
 
     return mae, rmse
-
-
-def get_toy_data():
-    # Sample Data
-    complete_data = pd.DataFrame({
-        'Col1': [1, 2, 3, 4],
-        'Col2': [4, 1, 2, 3],
-        'Col3': [1, 1, 1, 1],
-        'Col4': [2, 2, 3, 4]
-    })
-
-    incomplete_data = pd.DataFrame({
-        'Col1': [1, 2, np.nan, 4],
-        'Col2': [np.nan, 1, 2, 3],
-        'Col3': [1, np.nan, 1, 1],
-        'Col4': [2, 2, 3, np.nan]
-    })
-    return complete_data, incomplete_data
 
 def preprocess_columns_for_missing(df):
     """Preprocess columns by casting int64 columns to float64 to handle NaN values."""
@@ -133,12 +90,12 @@ def load_dataset(datasetid, missing_rate):
     target_columns = dataset.metadata.target_col
     logging.info(f"Target columns: {target_columns}")
 
-     # Ensure target_columns is valid
+    # Ensure target_columns is valid
     if target_columns and set(target_columns).issubset(df.columns):
         df_dropped = df.drop(columns=target_columns)
         logging.info(f"Dropped target columns: {target_columns}")
     else:
-        logging.warning(f"Target columns are missing or not valid for dataset {dataset_id}. Proceeding without dropping any columns.")
+        logging.warning(f"Target columns are missing or not valid for dataset {datasetid}. Proceeding without dropping any columns.")
         df_dropped = df  # If no valid target columns, don't drop any columns
 
     # Drop all non-numerical columns
@@ -146,21 +103,33 @@ def load_dataset(datasetid, missing_rate):
     logging.info(f"Retained numerical columns: {df_numerical.columns.tolist()}")
 
     # Use df_numerical as complete_data (without missing values)
-    complete_data = df_numerical.copy()
+    complete_data = df_numerical.fillna(df_numerical.mean())  # Initial fill with column means
 
-    # Generate missing values for incomplete_data using the original copy of df_dropped
-    incomplete_data = generate_missing_df(df_dropped, missing_rate)  # Generate missing values for incomplete_data
+    # Check for any columns that are still NaN and fill with 0 or another default value
+    if complete_data.isna().sum().sum() > 0:
+        logging.warning("Some columns in complete_data still contain NaNs after mean fill. Filling remaining NaNs with 0.")
+        complete_data = complete_data.fillna(0)  # Fill any remaining NaNs with 0 as a last resort
 
-    # Ensure complete_data contains no missing values
-    complete_values_count = complete_data.isna().sum().sum()
-    logging.info(f"The complete DataFrame contains {complete_values_count} missing values after load_dataset()")
+    # Generate missing values for incomplete_data using the now fully populated complete_data
+    incomplete_data = generate_missing_df(complete_data, missing_rate)  # Introduce experimental missing values
 
-    # Check if incomplete_data contains missing values
-    missing_values_count = incomplete_data.isna().sum().sum()
-    logging.info(f"The incomplete DataFrame contains {missing_values_count} missing values after load_dataset()")
-
-    # Return both the complete and incomplete datasets
     return complete_data, incomplete_data
+
+
+# Function to log results to a CSV file
+def log_results(dataset_id, missing_rate, mae, rmse):
+    # Ensure the results directory exists
+    results_file = "./results/experiment_results.csv"
+    file_exists = os.path.isfile(results_file)
+
+    with open(results_file, mode='a', newline='') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(["Dataset ID", "Missing Rate", "MAE", "RMSE"])  # Write header if file doesn't exist
+
+        writer.writerow([dataset_id, missing_rate, mae, rmse])
+    logging.info(f"Results logged for dataset {dataset_id} and missing rate {missing_rate}.")
+
 
 
 class RLImputer:
@@ -199,58 +168,45 @@ class RLImputer:
         q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
         self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
 
-    def train_with_logging(self, episodes=10000, log_interval=1000, results_dir="./results",
-                                        experiment_table=None, progress_data=None, index=None):
-        start_episode = 1
-        # total_steps = 0  # Track the total number of steps (iterations)
-        max_steps_per_episode = 1000  # Limit for maximum steps per episode
+    def train(self, episodes=250, log_interval=1):
+        steps_per_episode = []  # Track steps for each episode
+        mae_per_episode = []  # Track MAE for each episode
+        rmse_per_episode = []  # Track RMSE for each episode
 
-        try:
-            while start_episode <= episodes:
-                # Reset environment at the start of each episode
-                state = self.env.reset()
-                done = False
-                step = 0
+        mae, rmse = None, None  # Initialize in case of no episodes
 
-                # Loop over steps within an episode until done or max_steps_per_episode is reached
-                while not done and step < max_steps_per_episode:
-                    position = random.choice(self.env.missing_indices)
-                    action = self.choose_action(position)
-                    next_state, reward, done = self.env.step(action, position)
-                    self.learn(position, action, reward, next_state)
-                    state = next_state
-                    step += 1
+        for episode in range(1, episodes + 1):
+            state = self.env.reset()
+            done = False
+            step_count = 0  # Track steps within each episode
 
-                # Decay epsilon
-                self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+            # Run the episode until all values are imputed
+            while not done:
+                position = random.choice(self.env.missing_indices)
+                action = self.choose_action(position)
+                next_state, reward, done = self.env.step(action, position)
+                self.learn(position, action, reward, next_state)
+                state = next_state
+                step_count += 1
 
-                # Log at the end of each episode
-                if start_episode % log_interval == 0:
-                    logging.info(
-                        f"Episode {start_episode} completed with {step} steps, epsilon={self.epsilon:.4f}")
-                    # Calculate MAE and RMSE once the entire imputation is done
-                    mae, rmse = calculate_metrics(self.env, self)
-                    logging.info(f"Final MAE = {mae:.6f}, Final RMSE = {rmse:.6f}")
+            steps_per_episode.append(step_count)  # Record steps for this episode
 
-                start_episode += 1
-
-            # Calculate MAE and RMSE once the entire imputation is done
+            # Calculate MAE and RMSE for this episode
             mae, rmse = calculate_metrics(self.env, self)
-            logging.info(f"Final MAE = {mae:.6f}, Final RMSE = {rmse:.6f}")
+            mae_per_episode.append(mae)
+            rmse_per_episode.append(rmse)
 
-            # Update Streamlit table with MAE and RMSE at the end of all episodes
-            if experiment_table is not None and progress_data is not None:
-                progress_data.at[index, 'MAE'] = mae
-                progress_data.at[index, 'RMSE'] = rmse
-                experiment_table.dataframe(progress_data)
+            logging.info(f"Episode {episode} completed, steps={step_count}, epsilon={self.epsilon:.4f}")
+            logging.info(f"Episode {episode} - MAE = {mae:.6f}, RMSE = {rmse:.6f}")
 
-            file_name = f"{dataset_id}_missing_rate_{int(self.env.missing_rate * 100)}.csv"
-            file_path = os.path.join(results_dir, file_name)
-            self.env.state.to_csv(file_path, index=False)
-            logging.info(f"Final imputed data saved to {file_path}")
+            # Decay epsilon after each episode
+            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
 
-        except KeyboardInterrupt:
-            logging.info("Training interrupted.")
+        # Final metrics
+        final_episode_steps = steps_per_episode[-1] if steps_per_episode else 0
+        average_steps = sum(steps_per_episode) / len(steps_per_episode) if steps_per_episode else 0
+
+        return mae, rmse, steps_per_episode, mae_per_episode, rmse_per_episode, final_episode_steps, average_steps
 
 
 class ImputationEnvironment:
@@ -276,28 +232,90 @@ class ImputationEnvironment:
         return self.complete_data.iloc[:, col].dropna().unique()
 
 
+# Function to split dataset into training and test sets
+def split_dataset(complete_data, missing_rate, test_size=0.3, random_state=42):
+    # Perform the train-test split on complete_data
+    complete_data_train, complete_data_test = train_test_split(
+        complete_data, test_size=test_size, random_state=random_state)
+
+    # Generate missing values for only the training set
+    incomplete_data_train = generate_missing_df(complete_data_train, missing_rate)
+
+    # Return both the training set (with missing data) and test set (complete)
+    return complete_data_train, incomplete_data_train, complete_data_test, complete_data_test  # Unaltered test set
+
+
+
+def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episode, mae_per_episode, rmse_per_episode,
+                          final_episode_steps, average_steps, imputed_data=None):
+    # Ensure the results directory exists
+    os.makedirs(results_dir, exist_ok=True)
+
+    # Path for the CSV file that will store episode metrics
+    metrics_file_path = os.path.join(results_dir, f"{dataset_id}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
+
+    # Save steps, MAE, and RMSE per episode to the CSV file
+    with open(metrics_file_path, mode='w', newline='') as metrics_file:
+        writer = csv.writer(metrics_file)
+        writer.writerow(["Episode", "Steps", "MAE", "RMSE"])
+        for ep, steps, mae, rmse in zip(range(1, len(steps_per_episode) + 1), steps_per_episode, mae_per_episode,
+                                        rmse_per_episode):
+            writer.writerow([ep, steps, mae, rmse])
+        writer.writerow(["Final Episode Steps", final_episode_steps])
+        writer.writerow(["Average Steps", average_steps])
+    logging.info(f"Metrics data saved to {metrics_file_path}")
+
+    # Save final imputed data if provided
+    if imputed_data is not None:
+        file_name = f"{dataset_id}_missing_rate_{int(missing_rate * 100)}.csv"
+        file_path = os.path.join(results_dir, file_name)
+        imputed_data.to_csv(file_path, index=False)
+        logging.info(f"Final imputed data saved to {file_path}")
+
+
+def run_experiment(dataset_id, missing_rate):
+    logging.info(f"Processing dataset ID: {dataset_id} with missing rate: {missing_rate}")
+
+    # Load and split dataset
+    complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
+    complete_data_train, incomplete_data_train, complete_data_test, _ = split_dataset(complete_data, missing_rate)
+
+    # Set up training environment
+    env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
+    agent = RLImputer(env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+
+    # Run training
+    final_mae, final_rmse, steps_per_episode, mae_per_episode, rmse_per_episode, final_episode_steps, average_steps = agent.train(
+        episodes=250)
+
+    # Save the results
+    save_training_results(
+        dataset_id=dataset_id,
+        missing_rate=missing_rate,
+        results_dir="./results",
+        steps_per_episode=steps_per_episode,
+        mae_per_episode=mae_per_episode,
+        rmse_per_episode=rmse_per_episode,
+        final_episode_steps=final_episode_steps,
+        average_steps=average_steps,
+        imputed_data=env.state
+    )
+
+    logging.info(f"Completed processing for dataset ID: {dataset_id} with missing rate: {missing_rate}")
+
+
+
 
 if __name__ == "__main__":
-    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149] # all datasets
-    missing_rates = [0.05, 0.10, 0.15, 0.20]  # our missing rates
+    # dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
+    dataset_ids = [94]  # Define datasets for testing
+    missing_rates = [0.05, 0.10, 0.15]  # Define missing rates
 
-    for dataset_id in dataset_ids:
-        for missing_rate in missing_rates:
-            logging.info(f"Processing dataset ID: {dataset_id} with missing rate: {missing_rate}")
+    # Create a list of all experiments (dataset_id, missing_rate)
+    experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
-            # Load the dataset
-            complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
+    # Run experiments in parallel using multiprocessing
+    with mp.Pool(processes=12) as pool:  # Adjust 'processes' based on available CPU
+        pool.starmap(run_experiment, experiments)
 
-            # Initialize the environment and the Q-learning agent
-            env = ImputationEnvironment(incomplete_data, complete_data, missing_rate)
-            agent = RLImputer(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
-
-            # Define a specific checkpoint directory for each dataset and missing rate
-            checkpoint_dir = f"./checkpoints/dataset_{dataset_id}_missing_rate_{int(missing_rate * 100)}"
-
-            # Train the agent and create checkpoints
-            agent.train_with_logging(episodes=10000, log_interval=1000)
-
-            logging.info(f"Completed training for dataset ID: {dataset_id} with missing rate: {missing_rate}")
-
-    logging.info("All datasets processed.")
+    logging.info("All experiments completed.")
