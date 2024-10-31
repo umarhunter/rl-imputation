@@ -34,7 +34,7 @@ def calculate_metrics(env, agent):
         logging.error("NaN values found in complete_data:")
         for col, count in nan_columns.items():
             logging.error(f"Complete Data: Column '{col}': {count} NaN values")
-        return None, None  # Early exit if complete_data has NaNs
+        raise Exception("env.complete_data.")  # Early exit if complete_data has NaNs
 
     if imputed_data.isna().sum().sum() > 0:
         nan_counts = env.complete_data.isna().sum()  # Series with NaN counts per column
@@ -105,13 +105,8 @@ def load_dataset(datasetid, missing_rate):
     # Use df_numerical as complete_data (without missing values)
     complete_data = df_numerical.fillna(df_numerical.mean())  # Initial fill with column means
 
-    # Check for any columns that are still NaN and fill with 0 or another default value
-    if complete_data.isna().sum().sum() > 0:
-        logging.warning("Some columns in complete_data still contain NaNs after mean fill. Filling remaining NaNs with 0.")
-        complete_data = complete_data.fillna(0)  # Fill any remaining NaNs with 0 as a last resort
-
     # Generate missing values for incomplete_data using the now fully populated complete_data
-    incomplete_data = generate_missing_df(complete_data, missing_rate)  # Introduce experimental missing values
+    incomplete_data = generate_missing_df(complete_data.copy(), missing_rate)  # Introduce experimental missing values
 
     return complete_data, incomplete_data
 
@@ -239,7 +234,7 @@ def split_dataset(complete_data, missing_rate, test_size=0.3, random_state=42):
         complete_data, test_size=test_size, random_state=random_state)
 
     # Generate missing values for only the training set
-    incomplete_data_train = generate_missing_df(complete_data_train, missing_rate)
+    incomplete_data_train = generate_missing_df(complete_data_train.copy(), missing_rate)
 
     # Return both the training set (with missing data) and test set (complete)
     return complete_data_train, incomplete_data_train, complete_data_test, complete_data_test  # Unaltered test set
@@ -278,7 +273,15 @@ def run_experiment(dataset_id, missing_rate):
 
     # Load and split dataset
     complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
+
+    if complete_data.isna().sum().sum() > 0:
+        logging.error("NaN values unexpectedly found in complete_data before training starts.")
+        raise Exception("complete_data contains NaNs unexpectedly.")
+
     complete_data_train, incomplete_data_train, complete_data_test, _ = split_dataset(complete_data, missing_rate)
+    if complete_data_train.isna().sum().sum() > 0:
+        logging.error("NaN values unexpectedly found in complete_data before training starts.")
+        raise Exception("complete_data contains NaNs unexpectedly.")
 
     # Set up training environment
     env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
