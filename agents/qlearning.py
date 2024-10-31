@@ -4,11 +4,10 @@ import os
 from collections import defaultdict
 import numpy as np
 import pandas as pd
-import torch
 import multiprocessing as mp
 import csv
 
-from ucimlrepo import fetch_ucirepo, list_available_datasets
+from ucimlrepo import fetch_ucirepo
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.model_selection import train_test_split
 
@@ -37,12 +36,12 @@ def calculate_metrics(env, agent):
         raise Exception("env.complete_data.")  # Early exit if complete_data has NaNs
 
     if imputed_data.isna().sum().sum() > 0:
-        nan_counts = env.complete_data.isna().sum()  # Series with NaN counts per column
+        nan_counts = imputed_data.isna().sum()  # Series with NaN counts per column
         nan_columns = nan_counts[nan_counts > 0]  # Filter columns with NaNs
         logging.error("NaN values found in complete_data:")
         for col, count in nan_columns.items():
             logging.error(f"Imputed Data: Column '{col}': {count} NaN values")
-        return None, None  # Early exit if complete_data has NaNs
+        raise Exception("env.imputed_data.")  # Early exit if complete_data has NaNs
 
     # Calculate MAE and RMSE between imputed data and complete data
     mae = mean_absolute_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
@@ -163,7 +162,7 @@ class RLImputer:
         q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
         self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
 
-    def train(self, episodes=250, log_interval=1):
+    def train(self, datasetid, episodes=250):
         steps_per_episode = []  # Track steps for each episode
         mae_per_episode = []  # Track MAE for each episode
         rmse_per_episode = []  # Track RMSE for each episode
@@ -191,7 +190,7 @@ class RLImputer:
             mae_per_episode.append(mae)
             rmse_per_episode.append(rmse)
 
-            logging.info(f"Episode {episode} completed, steps={step_count}, epsilon={self.epsilon:.4f}")
+            logging.info(f"Dataset: {datasetid}Episode {episode} completed, steps={step_count}, epsilon={self.epsilon:.4f}")
             logging.info(f"Episode {episode} - MAE = {mae:.6f}, RMSE = {rmse:.6f}")
 
             # Decay epsilon after each episode
@@ -288,9 +287,9 @@ def run_experiment(dataset_id, missing_rate):
     agent = RLImputer(env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
 
     # Run training
-    final_mae, final_rmse, steps_per_episode, mae_per_episode, rmse_per_episode, final_episode_steps, average_steps = agent.train(
-        episodes=250)
+    final_mae, final_rmse, steps_per_episode, mae_per_episode, rmse_per_episode, final_episode_steps, average_steps = agent.train(dataset_id, episodes=250)
 
+    actual_mae, actual_rmse = calculate_metrics(env, agent)
     # Save the results
     save_training_results(
         dataset_id=dataset_id,
@@ -312,7 +311,7 @@ def run_experiment(dataset_id, missing_rate):
 if __name__ == "__main__":
     # dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
     dataset_ids = [94]  # Define datasets for testing
-    missing_rates = [0.05, 0.10, 0.15]  # Define missing rates
+    missing_rates = [0.05]  # Define missing rates
 
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
