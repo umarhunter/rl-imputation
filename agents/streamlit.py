@@ -57,7 +57,7 @@ for index, row in progress_data.iterrows():
         
         # Run the experiment
         file_path = f"./results/dataset_{dataset_id}_missing_{int(missing_rate * 100)}.csv"
-        agent.train_with_logging(max_total_steps=10000, max_episodes=1000, file_path=file_path, experiment_table=experiment_table, progress_data=progress_data, index=index)
+        agent.train_with_logging(max_episodes=1000, max_steps_per_episode=10000, file_path=file_path, experiment_table=experiment_table, progress_data=progress_data, index=index)
         
         # Mark as completed
         progress_data.at[index, 'Status'] = 'Completed'

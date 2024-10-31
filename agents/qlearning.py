@@ -125,7 +125,7 @@ def generate_missing_df(df, missing_rate):
 
     return df_with_missing
 
-def load_dataset(datasetid, missing_rate=0.05):
+def load_dataset(datasetid, missing_rate):
     dataset = fetch_ucirepo(id=datasetid)
     df = dataset.data.original
 
@@ -141,8 +141,12 @@ def load_dataset(datasetid, missing_rate=0.05):
         logging.warning(f"Target columns are missing or not valid for dataset {dataset_id}. Proceeding without dropping any columns.")
         df_dropped = df  # If no valid target columns, don't drop any columns
 
-    # Use df_dropped as complete_data (without missing values)
-    complete_data = df_dropped.copy()
+    # Drop all non-numerical columns
+    df_numerical = df_dropped.select_dtypes(include=[np.number])
+    logging.info(f"Retained numerical columns: {df_numerical.columns.tolist()}")
+
+    # Use df_numerical as complete_data (without missing values)
+    complete_data = df_numerical.copy()
 
     # Generate missing values for incomplete_data using the original copy of df_dropped
     incomplete_data = generate_missing_df(df_dropped, missing_rate)  # Generate missing values for incomplete_data
@@ -195,35 +199,38 @@ class RLImputer:
         q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
         self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
 
-    def train_with_logging(self, max_episodes=1000, max_total_steps=10000, log_interval=100, log_dir="./logs", file_path="./final_results.csv", experiment_table=None, progress_data=None, index=None):
+    def train_with_logging(self, episodes=10000, log_interval=1000, results_dir="./results",
+                                        experiment_table=None, progress_data=None, index=None):
         start_episode = 1
-        total_steps = 0  # Track the total number of steps (iterations)
+        # total_steps = 0  # Track the total number of steps (iterations)
+        max_steps_per_episode = 1000  # Limit for maximum steps per episode
 
         try:
-            while start_episode <= max_episodes and total_steps < max_total_steps:  # Stop after max_episodes or total steps reached
-                logging.info(f"Starting Episode {start_episode}/{max_episodes}")
-
+            while start_episode <= episodes:
                 # Reset environment at the start of each episode
                 state = self.env.reset()
                 done = False
                 step = 0
 
-                # Loop over steps within an episode until done or max_total_steps is reached
-                while not done and total_steps < max_total_steps:
+                # Loop over steps within an episode until done or max_steps_per_episode is reached
+                while not done and step < max_steps_per_episode:
                     position = random.choice(self.env.missing_indices)
                     action = self.choose_action(position)
                     next_state, reward, done = self.env.step(action, position)
                     self.learn(position, action, reward, next_state)
                     state = next_state
                     step += 1
-                    total_steps += 1  # Track total number of steps
 
-                    # Decay epsilon
-                    self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+                # Decay epsilon
+                self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
 
                 # Log at the end of each episode
                 if start_episode % log_interval == 0:
-                    logging.info(f"Episode {start_episode} completed with {step} steps. Total steps so far: {total_steps}/{max_total_steps}")
+                    logging.info(
+                        f"Episode {start_episode} completed with {step} steps, epsilon={self.epsilon:.4f}")
+                    # Calculate MAE and RMSE once the entire imputation is done
+                    mae, rmse = calculate_metrics(self.env, self)
+                    logging.info(f"Final MAE = {mae:.6f}, Final RMSE = {rmse:.6f}")
 
                 start_episode += 1
 
@@ -237,7 +244,8 @@ class RLImputer:
                 progress_data.at[index, 'RMSE'] = rmse
                 experiment_table.dataframe(progress_data)
 
-            # Save the final imputed data to the specified file path after all episodes
+            file_name = f"{dataset_id}_missing_rate_{int(self.env.missing_rate * 100)}.csv"
+            file_path = os.path.join(results_dir, file_name)
             self.env.state.to_csv(file_path, index=False)
             logging.info(f"Final imputed data saved to {file_path}")
 
@@ -246,12 +254,12 @@ class RLImputer:
 
 
 class ImputationEnvironment:
-    def __init__(self, incomplete_data, complete_data):
+    def __init__(self, incomplete_data, complete_data, missing_rate):
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data
         self.state = incomplete_data.copy()
         self.missing_indices = np.argwhere(pd.isna(self.incomplete_data.values))
-
+        self.missing_rate = missing_rate
     def reset(self):
         self.state = self.incomplete_data.copy()
         return self.state
@@ -268,75 +276,28 @@ class ImputationEnvironment:
         return self.complete_data.iloc[:, col].dropna().unique()
 
 
-# Define search spaces for alpha and gamma based on the paper
-alpha_space = np.arange(0, 0.501, 0.001)  # Alpha: {0, 0.001, 0.002, ..., 0.5}
-gamma_space = np.arange(0.9, 1.0, 0.01)   # Gamma: {0.9, 0.91, 0.92, ..., 0.99}
 
-def grid_search_qlearning(dataset_id, missing_rate, max_episodes=1000, max_total_steps=10000):
-    best_mae = float('inf')
-    best_rmse = float('inf')
-    best_alpha = None
-    best_gamma = None
-    best_results = {}
+if __name__ == "__main__":
+    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149] # all datasets
+    missing_rates = [0.05, 0.10, 0.15, 0.20]  # our missing rates
 
-    # Loop through all combinations of alpha and gamma
-    for alpha in alpha_space:
-        for gamma in gamma_space:
-            logging.info(f"Evaluating alpha={alpha}, gamma={gamma}")
+    for dataset_id in dataset_ids:
+        for missing_rate in missing_rates:
+            logging.info(f"Processing dataset ID: {dataset_id} with missing rate: {missing_rate}")
 
-            # Load dataset
+            # Load the dataset
             complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
-            env = ImputationEnvironment(incomplete_data, complete_data)
 
-            # Initialize RL agent with current alpha and gamma
-            agent = RLImputer(env=env, alpha=alpha, gamma=gamma, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+            # Initialize the environment and the Q-learning agent
+            env = ImputationEnvironment(incomplete_data, complete_data, missing_rate)
+            agent = RLImputer(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
 
-            # Run the Q-learning process
-            agent.train_with_logging(max_episodes=max_episodes, max_total_steps=max_total_steps)
+            # Define a specific checkpoint directory for each dataset and missing rate
+            checkpoint_dir = f"./checkpoints/dataset_{dataset_id}_missing_rate_{int(missing_rate * 100)}"
 
-            # Calculate metrics (MAE, RMSE) after training
-            mae, rmse = calculate_metrics(env, agent)
+            # Train the agent and create checkpoints
+            agent.train_with_logging(episodes=10000, log_interval=1000)
 
-            logging.info(f"Results for alpha={alpha}, gamma={gamma}: MAE={mae}, RMSE={rmse}")
+            logging.info(f"Completed training for dataset ID: {dataset_id} with missing rate: {missing_rate}")
 
-            # Store the best performing hyperparameters based on MAE or RMSE
-            if mae < best_mae:
-                best_mae = mae
-                best_rmse = rmse
-                best_alpha = alpha
-                best_gamma = gamma
-                best_results = {
-                    "alpha": alpha,
-                    "gamma": gamma,
-                    "mae": mae,
-                    "rmse": rmse
-                }
-
-    logging.info(f"Best Results: Alpha={best_alpha}, Gamma={best_gamma}, MAE={best_mae}, RMSE={best_rmse}")
-    return best_results
-
-
-# if __name__ == "__main__":
-#     dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149] # all datasets
-#     missing_rates = [0.05, 0.10, 0.15, 0.20]  # our missing rates
-
-#     for dataset_id in dataset_ids:
-#         for missing_rate in missing_rates:
-#             logging.info(f"Processing dataset ID: {dataset_id} with missing rate: {missing_rate}")
-
-#             # Load the dataset
-#             complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
-
-#             # Initialize the environment and the Q-learning agent
-#             env = ImputationEnvironment(incomplete_data, complete_data)
-#             agent = RLImputer(env=env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
-
-#             # Define a specific checkpoint directory for each dataset and missing rate
-#             checkpoint_dir = f"./checkpoints/dataset_{dataset_id}_missing_rate_{int(missing_rate * 100)}"
-
-#             # Train the agent and create checkpoints
-#             agent.train_with_logging(episodes=250, log_interval=50, checkpoint_dir=checkpoint_dir, patience=15)
-
-#             logging.info(f"Completed training for dataset ID: {dataset_id} with missing rate: {missing_rate}")
-
-#     logging.info("All datasets processed.")
+    logging.info("All datasets processed.")

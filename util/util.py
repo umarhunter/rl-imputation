@@ -165,6 +165,7 @@ def result_handler(model, env, dataset_id, episodes):
     output_dir = 'results'
     os.makedirs(output_dir, exist_ok=True)
 
+
     base_file_name = f"{result_data['dataset_name']}"
     file_index = 1
 
