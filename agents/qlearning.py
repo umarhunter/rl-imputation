@@ -85,6 +85,9 @@ def load_dataset(datasetid, missing_rate):
     dataset = fetch_ucirepo(id=datasetid)
     df = dataset.data.original
 
+    if 'ID' in df.columns:
+        df = df.drop(columns=['ID'])
+
     # Drop the target columns before generating missing values
     target_columns = dataset.metadata.target_col
     logging.info(f"Target columns: {target_columns}")
@@ -164,6 +167,7 @@ class RLImputer:
 
     def train(self, datasetid, episodes=500, test_env=None, test_interval=50):
         steps_per_episode = []  # Track steps for each episode
+        epsilon_per_episode = []  # Track epsilon values for each episode
         train_mae_per_episode, train_rmse_per_episode = [], []
         test_mae_per_interval, test_rmse_per_interval = [], []
 
@@ -182,13 +186,14 @@ class RLImputer:
                 step_count += 1
 
             steps_per_episode.append(step_count)  # Record steps for this episode
+            epsilon_per_episode.append(self.epsilon)  # Record epsilon for this episode
 
             # Calculate MAE and RMSE on the training set
             train_mae, train_rmse = calculate_metrics(self.env, self)
             train_mae_per_episode.append(train_mae)
             train_rmse_per_episode.append(train_rmse)
             logging.info(
-                f"Dataset {datasetid}: Episode {episode} - Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}")
+                f"Dataset {datasetid}: Episode {episode} - Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, Epsilon = {self.epsilon:.4f}")
 
             # Periodically calculate MAE and RMSE on the test set
             if test_env and episode % test_interval == 0:
@@ -261,41 +266,36 @@ def split_dataset(complete_data, missing_rate, test_size=0.3, random_state=42):
     return complete_data_train, incomplete_data_train, complete_data_test, incomplete_data_test
 
 
-def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episode, mae_per_episode, rmse_per_episode,
-                          final_episode_steps, average_steps, imputed_data=None, test_mae_intervals=None,
-                          test_rmse_intervals=None):
+def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episode, epsilon_per_episode,
+                          mae_per_episode, rmse_per_episode, final_episode_steps, average_steps, imputed_data=None,
+                          test_mae_intervals=None, test_rmse_intervals=None):
     os.makedirs(results_dir, exist_ok=True)
     metrics_file_path = os.path.join(results_dir, f"{dataset_id}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
 
-    # Initialize test intervals as empty lists if None
     test_mae_intervals = test_mae_intervals or []
     test_rmse_intervals = test_rmse_intervals or []
 
-    # Convert test intervals to a dictionary for easy lookup
     test_mae_dict = dict(test_mae_intervals)
     test_rmse_dict = dict(test_rmse_intervals)
 
     with open(metrics_file_path, mode='w', newline='') as metrics_file:
         writer = csv.writer(metrics_file)
-        # Header for CSV
-        writer.writerow(["Episode", "Steps", "Training MAE", "Training RMSE", "Test Interval MAE", "Test Interval RMSE"])
+        writer.writerow(["Episode", "Steps", "Epsilon", "Training MAE", "Training RMSE", "Test Interval MAE", "Test Interval RMSE"])
 
-        for ep, steps, mae, rmse in zip(range(1, len(steps_per_episode) + 1), steps_per_episode, mae_per_episode, rmse_per_episode):
-            # Add test interval MAE/RMSE if it's available for the current episode, else use empty values
+        for ep, steps, eps, mae, rmse in zip(range(1, len(steps_per_episode) + 1), steps_per_episode, epsilon_per_episode, mae_per_episode, rmse_per_episode):
             test_mae = test_mae_dict.get(ep, "")
             test_rmse = test_rmse_dict.get(ep, "")
-            writer.writerow([ep, steps, mae, rmse, test_mae, test_rmse])
+            writer.writerow([ep, steps, eps, mae, rmse, test_mae, test_rmse])
 
-        # Summary row for final steps and average steps
-        writer.writerow([])  # Add a blank row for separation
+        writer.writerow([]) # empty row
         writer.writerow(["Final Episode Steps", final_episode_steps])
         writer.writerow(["Average Steps", average_steps])
 
-    # Save final imputed data if provided
     if imputed_data is not None:
         file_name = f"{dataset_id}_missing_rate_{int(missing_rate * 100)}.csv"
         file_path = os.path.join(results_dir, file_name)
         imputed_data.to_csv(file_path, index=False)
+
 
 
 def run_experiment(dataset_id, missing_rate):
@@ -313,7 +313,7 @@ def run_experiment(dataset_id, missing_rate):
     test_env = ImputationEnvironment(incomplete_data=incomplete_data_test, complete_data=complete_data_test, missing_rate=missing_rate)
 
     # Run training with periodic testing
-    train_mae_per_episode, train_rmse_per_episode, test_mae_per_interval, test_rmse_per_interval, final_steps, avg_steps, steps_per_episode = agent.train(dataset_id, episodes=1, test_env=test_env, test_interval=50)
+    train_mae_per_episode, train_rmse_per_episode, test_mae_per_interval, test_rmse_per_interval, final_steps, avg_steps, steps_per_episode = agent.train(dataset_id, episodes=500, test_env=test_env, test_interval=50)
 
     # Save or log results
     save_training_results(
@@ -333,8 +333,8 @@ def run_experiment(dataset_id, missing_rate):
 
 
 if __name__ == "__main__":
-    dataset_ids = [94, 59, ]  # all datasets
-    missing_rates = [0.05, ]  # missing rates
+    dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
+    missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
 
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
