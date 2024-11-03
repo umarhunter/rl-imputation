@@ -22,7 +22,7 @@ logging.basicConfig(
     ]
 )
 
-def calculate_metrics(env, agent):
+def calculate_metrics(env):
     # Get the imputed data (after training)
     imputed_data = env.state
 
@@ -165,11 +165,10 @@ class RLImputer:
         q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
         self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
 
-    def train(self, datasetid, episodes=500, test_env=None, test_interval=50):
+    def train(self, datasetid, episodes, missing_rate):
         steps_per_episode = []  # Track steps for each episode
         epsilon_per_episode = []  # Track epsilon values for each episode
         train_mae_per_episode, train_rmse_per_episode = [], []
-        test_mae_per_interval, test_rmse_per_interval = [], []
 
         for episode in range(1, episodes + 1):
             state = self.env.reset()
@@ -189,21 +188,11 @@ class RLImputer:
             epsilon_per_episode.append(self.epsilon)  # Record epsilon for this episode
 
             # Calculate MAE and RMSE on the training set
-            train_mae, train_rmse = calculate_metrics(self.env, self)
+            train_mae, train_rmse = calculate_metrics(self.env)
             train_mae_per_episode.append(train_mae)
             train_rmse_per_episode.append(train_rmse)
             logging.info(
-                f"Dataset {datasetid}: Episode {episode} - Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, Epsilon = {self.epsilon:.4f}")
-
-            # Periodically calculate MAE and RMSE on the test set
-            if test_env and episode % test_interval == 0:
-                test_env.reset()  # Reset test_env to its original incomplete state
-                # test_env.state = original_incomplete_test.copy()  # Reset to original incomplete state
-                self.apply_policy(test_env)  # Impute missing values in test_env
-                test_mae, test_rmse = calculate_metrics(test_env, self)
-                test_mae_per_interval.append((episode, test_mae))
-                test_rmse_per_interval.append((episode, test_rmse))
-                logging.info(f"Episode {episode} - Test MAE = {test_mae:.6f}, RMSE = {test_rmse:.6f}")
+                f"Dataset {datasetid} with missing rate {missing_rate}: Episode {episode} - Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, Epsilon = {self.epsilon:.4f}")
 
             # Decay epsilon after each episode
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
@@ -211,7 +200,8 @@ class RLImputer:
         final_steps = steps_per_episode[-1] if steps_per_episode else 0
         avg_steps = sum(steps_per_episode) / len(steps_per_episode) if steps_per_episode else 0
 
-        return train_mae_per_episode, train_rmse_per_episode, test_mae_per_interval, test_rmse_per_interval, final_steps, avg_steps, steps_per_episode
+        logging.info(f"Training completed for dataset {datasetid} with missing rate {missing_rate}.")
+        return train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode, epsilon_per_episode
 
     def apply_policy(self, env):
         """Apply the trained Q-table to impute missing values in the test environment."""
@@ -272,29 +262,28 @@ def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episo
     os.makedirs(results_dir, exist_ok=True)
     metrics_file_path = os.path.join(results_dir, f"{dataset_id}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
 
-    test_mae_intervals = test_mae_intervals or []
-    test_rmse_intervals = test_rmse_intervals or []
-
-    test_mae_dict = dict(test_mae_intervals)
-    test_rmse_dict = dict(test_rmse_intervals)
-
     with open(metrics_file_path, mode='w', newline='') as metrics_file:
         writer = csv.writer(metrics_file)
         writer.writerow(["Episode", "Steps", "Epsilon", "Training MAE", "Training RMSE", "Test Interval MAE", "Test Interval RMSE"])
 
         for ep, steps, eps, mae, rmse in zip(range(1, len(steps_per_episode) + 1), steps_per_episode, epsilon_per_episode, mae_per_episode, rmse_per_episode):
-            test_mae = test_mae_dict.get(ep, "")
-            test_rmse = test_rmse_dict.get(ep, "")
-            writer.writerow([ep, steps, eps, mae, rmse, test_mae, test_rmse])
+            writer.writerow([ep, steps, eps, mae, rmse, "", ""])  # Removed per-episode test metrics
 
-        writer.writerow([]) # empty row
+        writer.writerow([])  # empty row
         writer.writerow(["Final Episode Steps", final_episode_steps])
         writer.writerow(["Average Steps", average_steps])
+
+        if test_mae_intervals and test_rmse_intervals:
+            final_test_mae = test_mae_intervals[0][1]
+            final_test_rmse = test_rmse_intervals[0][1]
+            writer.writerow(["Final Test MAE", final_test_mae])
+            writer.writerow(["Final Test RMSE", final_test_rmse])
 
     if imputed_data is not None:
         file_name = f"{dataset_id}_missing_rate_{int(missing_rate * 100)}.csv"
         file_path = os.path.join(results_dir, file_name)
         imputed_data.to_csv(file_path, index=False)
+
 
 
 
@@ -307,13 +296,17 @@ def run_experiment(dataset_id, missing_rate):
 
     # Set up training environment
     env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
-    agent = RLImputer(env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01)
+    agent = RLImputer(env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.990, epsilon_min=0.01)
 
     # Set up test environment
     test_env = ImputationEnvironment(incomplete_data=incomplete_data_test, complete_data=complete_data_test, missing_rate=missing_rate)
 
-    # Run training with periodic testing
-    train_mae_per_episode, train_rmse_per_episode, test_mae_per_interval, test_rmse_per_interval, final_steps, avg_steps, steps_per_episode = agent.train(dataset_id, episodes=500, test_env=test_env, test_interval=50)
+    # Train the agent
+    train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode, epsilon_per_episode = agent.train(dataset_id, 600, missing_rate)
+
+    # Apply trained policy to test environment and calculate final test metrics
+    agent.apply_policy(test_env)
+    test_mae, test_rmse = calculate_metrics(test_env)
 
     # Save or log results
     save_training_results(
@@ -321,20 +314,23 @@ def run_experiment(dataset_id, missing_rate):
         missing_rate=missing_rate,
         results_dir="./results",
         steps_per_episode=steps_per_episode,
+        epsilon_per_episode=epsilon_per_episode,
         mae_per_episode=train_mae_per_episode,
         rmse_per_episode=train_rmse_per_episode,
         final_episode_steps=final_steps,
         average_steps=avg_steps,
         imputed_data=test_env.state,
-        test_mae_intervals=test_mae_per_interval,
-        test_rmse_intervals=test_rmse_per_interval
+        test_mae_intervals=[(300, test_mae)],  # Only saving the final test MAE
+        test_rmse_intervals=[(300, test_rmse)]  # Only saving the final test RMSE
     )
 
 
 
 if __name__ == "__main__":
+    #dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
     dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
-    missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
+    #missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
+    missing_rates = [0.05, 0.10, 0.15, 0.20]
 
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
