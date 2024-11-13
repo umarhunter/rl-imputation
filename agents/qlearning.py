@@ -87,14 +87,12 @@ logging.basicConfig(
 )
 import json
 
-def save_json_results(dataset_id, missing_rate, test_mae, test_rmse, mae_rmse_results, results_dir="./results"):
+def save_json_results(dataset_name, missing_rate, test_mae, test_rmse, mae_rmse_results, results_dir="./results"):
     os.makedirs(results_dir, exist_ok=True)
-    dataset_name = dataset_mapping.get(dataset_id, f"dataset_{dataset_id}")
     missing_rate_percent = int(missing_rate * 100)
 
     # Prepare the result entry
     result_entry = {
-        "Dataset ID": dataset_id,
         "Dataset Name": dataset_name,
         "Missing Rate": missing_rate_percent,
         "Test MAE": test_mae,
@@ -128,35 +126,19 @@ def save_json_results(dataset_id, missing_rate, test_mae, test_rmse, mae_rmse_re
 
     # Update or append the new result
     # Remove any existing entry for this dataset and missing rate
-    results_list = [entry for entry in results_list if not (entry["Dataset ID"] == dataset_id and entry["Missing Rate"] == missing_rate_percent)]
+    results_list = [entry for entry in results_list if not (entry["Dataset Name"] == dataset_name and entry["Missing Rate"] == missing_rate_percent)]
     results_list.append(result_entry)
 
     # Save back to JSON file
     with open(json_file, 'w') as f:
         json.dump(results_list, f, indent=4)
 
-    logging.info(f"JSON results saved for dataset {dataset_id} with missing rate {missing_rate_percent}%.")
+    logging.info(f"JSON results saved for dataset {dataset_name} with missing rate {missing_rate_percent}%.")
+
 
 def calculate_metrics(env):
     # Get the imputed data (after training)
     imputed_data = env.state
-
-    # Check for NaN values in complete_data and imputed_data
-    if env.complete_data.isna().sum().sum() > 0:
-        nan_counts = env.complete_data.isna().sum()  # Series with NaN counts per column
-        nan_columns = nan_counts[nan_counts > 0]  # Filter columns with NaNs
-        logging.error("NaN values found in complete_data:")
-        for col, count in nan_columns.items():
-            logging.error(f"Complete Data: Column '{col}': {count} NaN values")
-        raise Exception("env.complete_data.")  # Early exit if complete_data has NaNs
-
-    if imputed_data.isna().sum().sum() > 0:
-        nan_counts = imputed_data.isna().sum()  # Series with NaN counts per column
-        nan_columns = nan_counts[nan_counts > 0]  # Filter columns with NaNs
-        logging.error("NaN values found in complete_data:")
-        for col, count in nan_columns.items():
-            logging.error(f"Imputed Data: Column '{col}': {count} NaN values")
-        raise Exception("env.imputed_data.")  # Early exit if complete_data has NaNs
 
     # Calculate MAE and RMSE between imputed data and complete data
     mae = mean_absolute_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
@@ -191,7 +173,7 @@ def generate_missing_df(df, missing_rate):
     multi_dim_indices = np.unravel_index(missing_indices, df_with_missing.shape)
 
     # Assign NaN to the missing indices
-    for row_idx, col_idx in zip(*multi_dim_indices):
+    for row_idx, col_idx in zip(*multi_dim_indices): # Unpack the multi-dimensional indices
         df_with_missing.iat[row_idx, col_idx] = np.nan
 
     return df_with_missing
@@ -245,97 +227,126 @@ def log_results(dataset_id, missing_rate, mae, rmse):
 
 
 class RLImputer:
-    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.01):
+    def __init__(self, env, alpha=1.0, gamma=0.9, epsilon=1.0, epsilon_decay=0.995,
+                 epsilon_min=0.01):
         logging.info("Initializing Q-Learning Agent")
         self.env = env
-        self.alpha = alpha # learning rate
-        self.gamma = gamma # discount factor
+        self.alpha = alpha  # Learning rate
+        self.gamma = gamma  # Discount factor
         self.epsilon = epsilon
         self.epsilon_decay = epsilon_decay
         self.epsilon_min = epsilon_min
-
-        # Simplified Q-table: store Q-values for positions and actions
+        self.actions = [-1, 1]  # Decrease or increase actions
         self.q_table = defaultdict(lambda: defaultdict(float))
 
-    def choose_action(self, position):
-        """Choose an action using an epsilon-greedy policy."""
-        state_key = tuple(position)  # Simplify state representation
+    def get_state(self, position, env):
+        row, col = position
+        current_value = env.state.iat[row, col]
 
-        if random.uniform(0, 1) < self.epsilon:
-            action = random.choice(self.env.get_possible_actions(position[1]))
-            return action
+        if np.isnan(current_value):
+            current_value = env.initial_estimate.iat[row, col]
+
+        true_value = env.complete_data.iat[row, col]
+        error = abs(true_value - current_value)
+
+        # Get the column name from the column index
+        col_name = env.state.columns[col]
+        # Get the standard deviation using the column name
+        std_dev = env.column_std_dev[col_name]
+
+        # Discretize the error into bins
+        error_bin_size = std_dev * 0.1  # we can adjust
+
+        if error_bin_size == 0:
+            error_bin = 0
         else:
-            # Exploitation: choose the best known action
-            actions = self.env.get_possible_actions(position[1])
-            q_values = {a: self.q_table[state_key][a] for a in actions}
-            best_action = max(q_values, key=q_values.get)
-            return best_action
+            error_bin = int(error / error_bin_size)
 
-    def apply_policy(self, env):
-        """Apply the trained Q-table to impute missing values in the test environment."""
-        for position in env.missing_indices:
-            state_key = tuple(position)
-            # Choose the best action based on learned Q-values
-            actions = env.get_possible_actions(position[1])
-            if actions.size > 0:  # Check if actions array is not empty
-                q_values = {a: self.q_table[state_key][a] for a in actions}
-                best_action = max(q_values, key=q_values.get)
-                env.state.iat[position[0], position[1]] = best_action
-        return env.state
+        state = (col_name, error_bin)
+        return state
 
-    def learn(self, position, action, reward, next_position):
+    def choose_action(self, state):
+        """Choose an action using an epsilon-greedy policy."""
+        if random.uniform(0, 1) < self.epsilon:
+            action = random.choice(self.actions)
+        else:
+            q_values = self.q_table[state]
+            if q_values:
+                action = max(q_values, key=q_values.get)
+            else:
+                # If state is unseen, choose a random action
+                action = random.choice(self.actions)
+        return action
+
+    def learn(self, state, action, reward, next_state):
         """Update the Q-table based on the action taken."""
-        state_key = tuple(position)
-        next_state_key = tuple(next_position)
+        q_predict = self.q_table[state][action]
+        q_target = reward + self.gamma * max(self.q_table[next_state].values(), default=0)
+        self.q_table[state][action] += self.alpha * (q_target - q_predict)
 
-        q_predict = self.q_table[state_key][action]
-        q_target = reward + self.gamma * max(self.q_table[next_state_key].values(), default=0)
-        self.q_table[state_key][action] += self.alpha * (q_target - q_predict)
-
-    def train(self, datasetid, episodes, missing_rate, test_env, test_interval=50):
-        steps_per_episode = []  # Track steps for each episode
-        epsilon_per_episode = []  # Track epsilon values for each episode
+    def train(self, dataset_name, episodes, missing_rate, test_env, test_interval=50, patience=25):
+        steps_per_episode = []
+        epsilon_per_episode = []
         train_mae_per_episode, train_rmse_per_episode = [], []
         test_mae_per_interval, test_rmse_per_interval = [], []
 
+        best_test_mae = float('inf')
+        patience_counter = 0
+
         for episode in range(1, episodes + 1):
-            state = self.env.reset()
-            done = False
+            self.env.reset()
             step_count = 0
 
-            # Run the episode until all values are imputed
-            while not done:
-                position = random.choice(self.env.missing_indices)
-                action = self.choose_action(position)
-                next_state, reward, done = self.env.step(action, position)
-                self.learn(position, action, reward, next_state)
-                state = next_state
-                step_count += 1
+            # For each missing value
+            for position in self.env.missing_indices:
+                done = False
+                position_steps = 0
+                max_position_steps = 200  # Adjusted as per the paper
+                while not done and position_steps < max_position_steps:
+                    state = self.get_state(position, self.env)
+                    action = self.choose_action(state)
+                    # Apply action and get reward
+                    _, reward, done = self.env.step(action, position)
+                    next_state = self.get_state(position, self.env)
+                    # Learn from the experience
+                    self.learn(state, action, reward, next_state)
+                    position_steps += 1
+                    step_count += 1
 
-            steps_per_episode.append(step_count)  # Record steps for this episode
-            epsilon_per_episode.append(self.epsilon)  # Record epsilon for this episode
+            steps_per_episode.append(step_count)
+            epsilon_per_episode.append(self.epsilon)
 
             # Calculate MAE and RMSE on the training set
             train_mae, train_rmse = calculate_metrics(self.env)
             train_mae_per_episode.append(train_mae)
             train_rmse_per_episode.append(train_rmse)
             logging.info(
-                f"Dataset {datasetid} with missing rate {missing_rate}: Episode {episode} - Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, Epsilon = {self.epsilon:.4f}")
+                f"Dataset {dataset_name} MR {missing_rate}: Episode {episode} - "
+                f"Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, "
+                f"Epsilon = {self.epsilon:.4f}, Steps = {step_count}"
+            )
 
             # Periodic testing on the test set
             if episode % test_interval == 0:
-                # Reset test environment
                 test_env.reset()
-
-                # Apply current policy to test environment
                 self.apply_policy(test_env)
-
-                # Calculate MAE and RMSE on the test set
                 test_mae, test_rmse = calculate_metrics(test_env)
                 test_mae_per_interval.append((episode, test_mae))
                 test_rmse_per_interval.append((episode, test_rmse))
                 logging.info(
-                    f"Dataset {datasetid} with missing rate {missing_rate}: Episode {episode} - Test MAE = {test_mae:.6f}, RMSE = {test_rmse:.6f}")
+                    f"Dataset {dataset_name} MR {missing_rate} Episode {episode} - "
+                    f"Test MAE = {test_mae:.6f}, RMSE = {test_rmse:.6f}"
+                )
+
+                # Early stopping based on test MAE
+                if test_mae < best_test_mae:
+                    best_test_mae = test_mae
+                    patience_counter = 0
+                else:
+                    patience_counter += test_interval
+                    if patience_counter >= patience:
+                        logging.info(f"Early stopping triggered after {episode} episodes.")
+                        break  # Exit the training loop
 
             # Decay epsilon after each episode
             self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
@@ -343,18 +354,40 @@ class RLImputer:
         final_steps = steps_per_episode[-1] if steps_per_episode else 0
         avg_steps = sum(steps_per_episode) / len(steps_per_episode) if steps_per_episode else 0
 
-        logging.info(f"Training completed for dataset {datasetid} with missing rate {missing_rate}.")
+        logging.info(f"Training completed for dataset {dataset_name} with missing rate {missing_rate}.")
         return (train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode,
                 epsilon_per_episode, test_mae_per_interval, test_rmse_per_interval)
 
+    def apply_policy(self, env):
+        """Apply the trained Q-table to impute missing values in the environment."""
+        for position in env.missing_indices:
+            done = False
+            position_steps = 0
+            max_position_steps = 200  # Same as in training
+            while not done and position_steps < max_position_steps:
+                state = self.get_state(position, env)
+                q_values = self.q_table[state]
+                if q_values:
+                    action = max(q_values, key=q_values.get)
+                else:
+                    action = random.choice(self.actions)  # If state unseen, choose random action
+                _, _, done = env.step(action, position)
+                position_steps += 1
+
 
 class ImputationEnvironment:
-    def __init__(self, incomplete_data, complete_data, missing_rate):
+    def __init__(self, incomplete_data, complete_data, missing_rate, adjustment_factor=0.01, error_threshold=0.01):
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data
         self.state = incomplete_data.copy()
         self.missing_indices = np.argwhere(pd.isna(self.incomplete_data.values))
         self.missing_rate = missing_rate
+        # Initial estimate using mean imputation
+        self.initial_estimate = incomplete_data.fillna(incomplete_data.mean())
+        self.adjustment_factor = adjustment_factor
+        self.error_threshold = error_threshold
+        # Compute standard deviation per column
+        self.column_std_dev = self.complete_data.std()
 
     def reset(self):
         self.state = self.incomplete_data.copy()
@@ -362,9 +395,30 @@ class ImputationEnvironment:
 
     def step(self, action, position):
         row, col = position
-        self.state.iat[row, col] = action
-        reward = -abs(self.complete_data.iat[row, col] - action)
-        done = not pd.isna(self.state.values).any()
+        current_value = self.state.iat[row, col]
+
+        if np.isnan(current_value):
+            current_value = self.initial_estimate.iat[row, col]
+            self.state.iat[row, col] = current_value
+
+        true_value = self.complete_data.iat[row, col]
+
+        # Calculate previous error before action
+        previous_error = abs(true_value - current_value)
+
+        # Apply action using multiplicative adjustment
+        new_value = current_value * (1 + self.adjustment_factor * action)
+        self.state.iat[row, col] = new_value
+
+        # Calculate new error after action
+        new_error = abs(true_value - new_value)
+
+        # Calculate reward based on percentage improvement
+        reward = previous_error - new_error
+
+        # Check if error is below threshold
+        done = new_error < self.error_threshold
+
         return self.state, reward, done
 
     def get_possible_actions(self, col):
@@ -388,11 +442,11 @@ def split_dataset(complete_data, missing_rate, test_size=0.3, random_state=42):
     return complete_data_train, incomplete_data_train, complete_data_test, incomplete_data_test
 
 
-def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episode, epsilon_per_episode,
+def save_training_results(dataset_name, missing_rate, results_dir, steps_per_episode, epsilon_per_episode,
                           mae_per_episode, rmse_per_episode, final_episode_steps, average_steps, imputed_data=None,
                           test_mae_intervals=None, test_rmse_intervals=None):
     os.makedirs(results_dir, exist_ok=True)
-    metrics_file_path = os.path.join(results_dir, f"{dataset_id}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
+    metrics_file_path = os.path.join(results_dir, f"{dataset_name}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
 
     with open(metrics_file_path, mode='w', newline='') as metrics_file:
         writer = csv.writer(metrics_file)
@@ -422,16 +476,16 @@ def save_training_results(dataset_id, missing_rate, results_dir, steps_per_episo
             writer.writerow(["Final Test RMSE", final_test_rmse])
 
     if imputed_data is not None:
-        file_name = f"{dataset_id}_missing_rate_{int(missing_rate * 100)}.csv"
+        file_name = f"{dataset_name}_missing_rate_{int(missing_rate * 100)}.csv"
         file_path = os.path.join(results_dir, file_name)
         imputed_data.to_csv(file_path, index=False)
 
 
 
-
-
 def run_experiment(dataset_id, missing_rate):
-    logging.info(f"Processing dataset ID: {dataset_id} with missing rate: {missing_rate}")
+    # Get the dataset name from the mapping
+    dataset_name = dataset_mapping.get(dataset_id, f"dataset_{dataset_id}")
+    logging.info(f"Processing dataset: {dataset_name} with missing rate: {missing_rate}")
 
     # Load and split dataset
     complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
@@ -439,15 +493,15 @@ def run_experiment(dataset_id, missing_rate):
 
     # Set up training environment
     env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
-    agent = RLImputer(env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.990, epsilon_min=0.01)
+    agent = RLImputer(env, alpha=0.15, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
 
     # Set up test environment
     test_env = ImputationEnvironment(incomplete_data=incomplete_data_test, complete_data=complete_data_test, missing_rate=missing_rate)
 
-    # Train the agent with periodic testing
+    # Train the agent with early stopping
     (train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode,
      epsilon_per_episode, test_mae_per_interval, test_rmse_per_interval) = agent.train(
-        dataset_id, episodes=600, missing_rate=missing_rate, test_env=test_env, test_interval=50)
+        dataset_name, episodes=10000, missing_rate=missing_rate, test_env=test_env, test_interval=1, patience=35)
 
     # Apply trained policy to test environment and calculate final test metrics
     test_env.reset()  # Reset test environment before final testing
@@ -456,7 +510,7 @@ def run_experiment(dataset_id, missing_rate):
 
     # Save or log results
     save_training_results(
-        dataset_id=dataset_id,
+        dataset_name=dataset_name,  # Updated parameter
         missing_rate=missing_rate,
         results_dir="./results",
         steps_per_episode=steps_per_episode,
@@ -465,14 +519,14 @@ def run_experiment(dataset_id, missing_rate):
         rmse_per_episode=train_rmse_per_episode,
         final_episode_steps=final_steps,
         average_steps=avg_steps,
-        imputed_data=test_env.state,
+        imputed_data=env.state,
         test_mae_intervals=test_mae_per_interval,
         test_rmse_intervals=test_rmse_per_interval
     )
 
     # Save results to JSON for comparison
     save_json_results(
-        dataset_id=dataset_id,
+        dataset_name=dataset_name,  # Updated parameter
         missing_rate=missing_rate,
         test_mae=test_mae,
         test_rmse=test_rmse,
@@ -482,17 +536,22 @@ def run_experiment(dataset_id, missing_rate):
 
 
 
+
 if __name__ == "__main__":
-    #dataset_ids = [94, 59, 17, 332, 350, 189, 484, 149]  # all datasets
     dataset_ids = [17]  # all datasets
-    #missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
-    missing_rates = [0.05]
+    missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
 
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
     # Run experiments in parallel using multiprocessing
-    with mp.Pool(processes=3) as pool:  # Adjust 'processes' based on available CPU
-        pool.starmap(run_experiment, experiments)
+    try:
+        with mp.Pool(processes=4) as pool:
+            pool.starmap(run_experiment, experiments)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt detected, terminating pool.")
+        pool.terminate()  # Terminate all child processes immediately
+        pool.join()  # Wait for the pool to finish cleanup
+        print("All experiments were terminated.")
 
     logging.info("All experiments completed.")
