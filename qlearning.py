@@ -1,12 +1,14 @@
 import logging
 import random
 import os
-from collections import defaultdict
 import numpy as np
 import pandas as pd
 import multiprocessing as mp
 import csv
+import itertools
+import json
 
+from collections import defaultdict
 from ucimlrepo import fetch_ucirepo
 from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 from sklearn.model_selection import train_test_split
@@ -79,13 +81,12 @@ mae_rmse_results = {
 log_filename = "training.log"
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(levelname)s - %(processName)s - %(message)s',  # Include processName
     handlers=[
         logging.StreamHandler(),  # Output to console
         logging.FileHandler(log_filename, mode='w')  # Output to file
     ]
 )
-import json
 
 def save_json_results(dataset_name, missing_rate, test_mae, test_rmse, mae_rmse_results, results_dir="./results"):
     os.makedirs(results_dir, exist_ok=True)
@@ -137,12 +138,24 @@ def save_json_results(dataset_name, missing_rate, test_mae, test_rmse, mae_rmse_
 
 
 def calculate_metrics(env):
-    # Get the imputed data (after training)
-    imputed_data = env.state
+    # Get the positions where data was missing
+    missing_positions = env.missing_indices
 
-    # Calculate MAE and RMSE between imputed data and complete data
-    mae = mean_absolute_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
-    rmse = root_mean_squared_error(env.complete_data.values.flatten(), imputed_data.values.flatten())
+    # Extract the true values and imputed values at the missing positions
+    true_values = []
+    imputed_values = []
+
+    for position in missing_positions:
+        row, col = position
+        true_value = env.complete_data.iat[row, col]
+        imputed_value = env.state.iat[row, col]
+
+        true_values.append(true_value)
+        imputed_values.append(imputed_value)
+
+    # Calculate MAE and RMSE only over the missing positions
+    mae = mean_absolute_error(true_values, imputed_values)
+    rmse = root_mean_squared_error(true_values, imputed_values)
 
     return mae, rmse
 
@@ -227,8 +240,7 @@ def log_results(dataset_id, missing_rate, mae, rmse):
 
 
 class RLImputer:
-    def __init__(self, env, alpha=1.0, gamma=0.9, epsilon=1.0, epsilon_decay=0.995,
-                 epsilon_min=0.01):
+    def __init__(self, env, alpha=0.1, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1):
         logging.info("Initializing Q-Learning Agent")
         self.env = env
         self.alpha = alpha  # Learning rate
@@ -238,32 +250,6 @@ class RLImputer:
         self.epsilon_min = epsilon_min
         self.actions = [-1, 1]  # Decrease or increase actions
         self.q_table = defaultdict(lambda: defaultdict(float))
-
-    def get_state(self, position, env):
-        row, col = position
-        current_value = env.state.iat[row, col]
-
-        if np.isnan(current_value):
-            current_value = env.initial_estimate.iat[row, col]
-
-        true_value = env.complete_data.iat[row, col]
-        error = abs(true_value - current_value)
-
-        # Get the column name from the column index
-        col_name = env.state.columns[col]
-        # Get the standard deviation using the column name
-        std_dev = env.column_std_dev[col_name]
-
-        # Discretize the error into bins
-        error_bin_size = std_dev * 0.1  # we can adjust
-
-        if error_bin_size == 0:
-            error_bin = 0
-        else:
-            error_bin = int(error / error_bin_size)
-
-        state = (col_name, error_bin)
-        return state
 
     def choose_action(self, state):
         """Choose an action using an epsilon-greedy policy."""
@@ -284,12 +270,43 @@ class RLImputer:
         q_target = reward + self.gamma * max(self.q_table[next_state].values(), default=0)
         self.q_table[state][action] += self.alpha * (q_target - q_predict)
 
-    def train(self, dataset_name, episodes, missing_rate, test_env, test_interval=50, patience=25):
-        steps_per_episode = []
-        epsilon_per_episode = []
-        train_mae_per_episode, train_rmse_per_episode = [], []
-        test_mae_per_interval, test_rmse_per_interval = [], []
+    def train(self, dataset_name, episodes, missing_rate, test_env, test_interval=50, patience=1000, results_dir="./results"):
+        # Initialize metrics
+        train_metrics = {
+            "steps_per_episode": [],
+            "epsilon_per_episode": [],
+            "mae_per_episode": [],
+            "rmse_per_episode": []
+        }
+        test_metrics = {
+            "test_mae_per_interval": [],
+            "test_rmse_per_interval": []
+        }
 
+        # Initialize variables for tracking highest test MAE and RMSE
+        highest_test_mae = float('-inf')
+        highest_test_rmse = float('-inf')
+
+        # Prepare directories and files for real-time logging
+        os.makedirs(results_dir, exist_ok=True)
+        missing_rate_percent = int(missing_rate * 100)
+
+        # Paths for saving metrics
+        train_metrics_file = os.path.join(results_dir, 
+            f"{dataset_name}_missing_rate_{missing_rate_percent}_train_metrics.csv")
+        test_metrics_file = os.path.join(results_dir, 
+            f"{dataset_name}_missing_rate_{missing_rate_percent}_test_metrics.csv")
+
+        # Initialize CSV writers
+        train_file = open(train_metrics_file, mode='w', newline='')
+        train_writer = csv.writer(train_file)
+        train_writer.writerow(["Episode", "Steps", "Epsilon", "Training MAE", "Training RMSE"])
+
+        test_file = open(test_metrics_file, mode='w', newline='')
+        test_writer = csv.writer(test_file)
+        test_writer.writerow(["Episode", "Test MAE", "Test RMSE"])
+
+        # Initialize variables for early stopping
         best_test_mae = float('inf')
         patience_counter = 0
 
@@ -303,23 +320,31 @@ class RLImputer:
                 position_steps = 0
                 max_position_steps = 200  # Adjusted as per the paper
                 while not done and position_steps < max_position_steps:
-                    state = self.get_state(position, self.env)
+                    # Get current state from the environment
+                    state = self.env.get_state(position)
                     action = self.choose_action(state)
-                    # Apply action and get reward
+                    # Apply action and get reward from the environment
                     _, reward, done = self.env.step(action, position)
-                    next_state = self.get_state(position, self.env)
+                    # Get next state from the environment
+                    next_state = self.env.get_state(position)
                     # Learn from the experience
                     self.learn(state, action, reward, next_state)
                     position_steps += 1
                     step_count += 1
 
-            steps_per_episode.append(step_count)
-            epsilon_per_episode.append(self.epsilon)
+            # Decay epsilon after each episode
+            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
 
             # Calculate MAE and RMSE on the training set
             train_mae, train_rmse = calculate_metrics(self.env)
-            train_mae_per_episode.append(train_mae)
-            train_rmse_per_episode.append(train_rmse)
+            train_metrics["steps_per_episode"].append(step_count)
+            train_metrics["epsilon_per_episode"].append(self.epsilon)
+            train_metrics["mae_per_episode"].append(train_mae)
+            train_metrics["rmse_per_episode"].append(train_rmse)
+
+            # Write training metrics to CSV in real-time
+            train_writer.writerow([episode, step_count, self.epsilon, train_mae, train_rmse])
+
             logging.info(
                 f"Dataset {dataset_name} MR {missing_rate}: Episode {episode} - "
                 f"Training MAE = {train_mae:.6f}, RMSE = {train_rmse:.6f}, "
@@ -331,8 +356,18 @@ class RLImputer:
                 test_env.reset()
                 self.apply_policy(test_env)
                 test_mae, test_rmse = calculate_metrics(test_env)
-                test_mae_per_interval.append((episode, test_mae))
-                test_rmse_per_interval.append((episode, test_rmse))
+                test_metrics["test_mae_per_interval"].append((episode, test_mae))
+                test_metrics["test_rmse_per_interval"].append((episode, test_rmse))
+
+                # Update highest test MAE and RMSE
+                if test_mae > highest_test_mae:
+                    highest_test_mae = test_mae
+                if test_rmse > highest_test_rmse:
+                    highest_test_rmse = test_rmse
+
+                # Write test metrics to CSV in real-time
+                test_writer.writerow([episode, test_mae, test_rmse])
+
                 logging.info(
                     f"Dataset {dataset_name} MR {missing_rate} Episode {episode} - "
                     f"Test MAE = {test_mae:.6f}, RMSE = {test_rmse:.6f}"
@@ -348,15 +383,19 @@ class RLImputer:
                         logging.info(f"Early stopping triggered after {episode} episodes.")
                         break  # Exit the training loop
 
-            # Decay epsilon after each episode
-            self.epsilon = max(self.epsilon * self.epsilon_decay, self.epsilon_min)
+        # Close CSV files
+        train_file.close()
+        test_file.close()
 
-        final_steps = steps_per_episode[-1] if steps_per_episode else 0
-        avg_steps = sum(steps_per_episode) / len(steps_per_episode) if steps_per_episode else 0
+        # Log the highest test MAE and RMSE
+        logging.info(
+            f"Dataset {dataset_name} MR {missing_rate}: Highest Test MAE = {highest_test_mae:.6f}, "
+            f"Highest Test RMSE = {highest_test_rmse:.6f}"
+        )
 
         logging.info(f"Training completed for dataset {dataset_name} with missing rate {missing_rate}.")
-        return (train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode,
-                epsilon_per_episode, test_mae_per_interval, test_rmse_per_interval)
+
+        return train_metrics, test_metrics
 
     def apply_policy(self, env):
         """Apply the trained Q-table to impute missing values in the environment."""
@@ -365,7 +404,7 @@ class RLImputer:
             position_steps = 0
             max_position_steps = 200  # Same as in training
             while not done and position_steps < max_position_steps:
-                state = self.get_state(position, env)
+                state = env.get_state(position)
                 q_values = self.q_table[state]
                 if q_values:
                     action = max(q_values, key=q_values.get)
@@ -375,19 +414,97 @@ class RLImputer:
                 position_steps += 1
 
 
+
 class ImputationEnvironment:
-    def __init__(self, incomplete_data, complete_data, missing_rate, adjustment_factor=0.01, error_threshold=0.01):
+    def __init__(self, incomplete_data, complete_data, missing_rate, adjustment_factor=0.1, error_threshold=0.1):
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data
         self.state = incomplete_data.copy()
         self.missing_indices = np.argwhere(pd.isna(self.incomplete_data.values))
         self.missing_rate = missing_rate
+        
         # Initial estimate using mean imputation
         self.initial_estimate = incomplete_data.fillna(incomplete_data.mean())
+
         self.adjustment_factor = adjustment_factor
         self.error_threshold = error_threshold
-        # Compute standard deviation per column
-        self.column_std_dev = self.complete_data.std()
+
+        # Compute maximum possible error per column for normalization
+        self.max_error_per_column = (self.complete_data.max() - self.complete_data.min()).to_dict()
+
+        # Number of states (as per the paper)
+        self.n_states = 10
+
+        # Initialize the R-matrix
+        self.R_matrix = self.initialize_r_matrix()
+
+    def initialize_r_matrix(self):
+        # Initialize R-matrix with -1
+        R_matrix = np.full((self.n_states, self.n_states), -1)
+
+        # Set rewards for viable transitions
+        for i in range(self.n_states):
+            if i > 0:
+                R_matrix[i, i - 1] = 0  # Moving to a lower error state
+            if i < self.n_states - 1:
+                R_matrix[i, i + 1] = 0  # Moving to a higher error state
+
+        # Set high reward for transitions to the goal state (state 0)
+        for i in range(1, self.n_states):
+            R_matrix[i, 0] = 100
+
+        return R_matrix
+    
+
+    def get_state(self, position):
+        row, col = position
+        current_value = self.state.iat[row, col]
+
+        if np.isnan(current_value):
+            current_value = self.initial_estimate.iat[row, col]
+
+        true_value = self.complete_data.iat[row, col]
+        error = abs(true_value - current_value)
+
+        # Get the column name from the column index
+        col_name = self.state.columns[col]
+
+        # Normalize error between 0 and 1 using the column's max error
+        max_error = self.max_error_per_column[col_name]
+        if max_error == 0:
+            normalized_error = 0
+        else:
+            normalized_error = error / max_error
+            normalized_error = min(normalized_error, 1)  # Cap at 1
+
+        # Discretize normalized error into bins (states)
+        error_bin = int(normalized_error * (self.n_states - 1))
+
+        state = (col_name, error_bin)
+        return state
+
+    def get_state_with_value(self, position, value):
+        row, col = position
+
+        true_value = self.complete_data.iat[row, col]
+        error = abs(true_value - value)
+
+        # Get the column name from the column index
+        col_name = self.state.columns[col]
+
+        # Normalize error between 0 and 1 using the column's max error
+        max_error = self.max_error_per_column[col_name]
+        if max_error == 0:
+            normalized_error = 0
+        else:
+            normalized_error = error / max_error
+            normalized_error = min(normalized_error, 1)  # Cap at 1
+
+        # Discretize normalized error into bins (states)
+        error_bin = int(normalized_error * (self.n_states - 1))
+
+        state = (col_name, error_bin)
+        return state
 
     def reset(self):
         self.state = self.incomplete_data.copy()
@@ -399,27 +516,28 @@ class ImputationEnvironment:
 
         if np.isnan(current_value):
             current_value = self.initial_estimate.iat[row, col]
-            self.state.iat[row, col] = current_value
+            # Do not modify self.state here
 
-        true_value = self.complete_data.iat[row, col]
-
-        # Calculate previous error before action
-        previous_error = abs(true_value - current_value)
+        # Get the current state before applying the action
+        current_state = self.get_state_with_value(position, current_value)
 
         # Apply action using multiplicative adjustment
         new_value = current_value * (1 + self.adjustment_factor * action)
         self.state.iat[row, col] = new_value
 
-        # Calculate new error after action
-        new_error = abs(true_value - new_value)
+        # Get the next state after applying the action
+        next_state = self.get_state(position)  # Now self.state has been updated
 
-        # Calculate reward based on percentage improvement
-        reward = previous_error - new_error
+        # Get reward from R-matrix
+        current_state_index = current_state[1]
+        next_state_index = next_state[1]
+        reward = self.R_matrix[current_state_index, next_state_index]
 
-        # Check if error is below threshold
-        done = new_error < self.error_threshold
+        # Check if goal state (state 0) is reached
+        done = next_state_index == 0
 
         return self.state, reward, done
+
 
     def get_possible_actions(self, col):
         """Return possible actions (values) for a column (excluding NaN)."""
@@ -442,43 +560,54 @@ def split_dataset(complete_data, missing_rate, test_size=0.3, random_state=42):
     return complete_data_train, incomplete_data_train, complete_data_test, incomplete_data_test
 
 
-def save_training_results(dataset_name, missing_rate, results_dir, steps_per_episode, epsilon_per_episode,
-                          mae_per_episode, rmse_per_episode, final_episode_steps, average_steps, imputed_data=None,
-                          test_mae_intervals=None, test_rmse_intervals=None):
+def save_training_results(dataset_name, missing_rate, results_dir, 
+                          train_metrics, test_metrics, imputed_data=None):
+    """
+    Save training and test metrics to CSV files and optionally save imputed data.
+    
+    Parameters:
+    - dataset_name (str): Name of the dataset.
+    - missing_rate (float): Missing rate used in the experiment.
+    - results_dir (str): Directory to save the results.
+    - train_metrics (dict): Dictionary containing training metrics per episode.
+    - test_metrics (dict): Dictionary containing test metrics per interval.
+    - imputed_data (pd.DataFrame, optional): DataFrame containing the imputed data.
+    """
     os.makedirs(results_dir, exist_ok=True)
-    metrics_file_path = os.path.join(results_dir, f"{dataset_name}_missing_rate_{int(missing_rate * 100)}_metrics.csv")
-
-    with open(metrics_file_path, mode='w', newline='') as metrics_file:
-        writer = csv.writer(metrics_file)
-        writer.writerow(["Episode", "Steps", "Epsilon", "Training MAE", "Training RMSE", "Test MAE", "Test RMSE"])
-
-        max_length = max(len(steps_per_episode), len(mae_per_episode), len(test_mae_intervals or []))
-        test_interval_dict = dict(test_mae_intervals) if test_mae_intervals else {}
-        test_rmse_interval_dict = dict(test_rmse_intervals) if test_rmse_intervals else {}
-
-        for ep in range(1, len(steps_per_episode) + 1):
-            steps = steps_per_episode[ep - 1]
-            eps = epsilon_per_episode[ep - 1]
-            mae = mae_per_episode[ep - 1]
-            rmse = rmse_per_episode[ep - 1]
-            test_mae = test_interval_dict.get(ep, "")
-            test_rmse = test_rmse_interval_dict.get(ep, "")
-            writer.writerow([ep, steps, eps, mae, rmse, test_mae, test_rmse])
-
-        writer.writerow([])  # empty row
-        writer.writerow(["Final Episode Steps", final_episode_steps])
-        writer.writerow(["Average Steps", average_steps])
-
-        if test_mae_intervals and test_rmse_intervals:
-            final_test_mae = test_mae_intervals[-1][1]
-            final_test_rmse = test_rmse_intervals[-1][1]
-            writer.writerow(["Final Test MAE", final_test_mae])
-            writer.writerow(["Final Test RMSE", final_test_rmse])
-
-    if imputed_data is not None:
-        file_name = f"{dataset_name}_missing_rate_{int(missing_rate * 100)}.csv"
-        file_path = os.path.join(results_dir, file_name)
-        imputed_data.to_csv(file_path, index=False)
+    missing_rate_percent = int(missing_rate * 100)
+    
+    # Paths for saving metrics
+    train_metrics_file = os.path.join(results_dir, 
+        f"{dataset_name}_missing_rate_{missing_rate_percent}_train_metrics.csv")
+    test_metrics_file = os.path.join(results_dir, 
+        f"{dataset_name}_missing_rate_{missing_rate_percent}_test_metrics.csv")
+    
+    # Save training metrics
+    with open(train_metrics_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Episode", "Steps", "Epsilon", "Training MAE", "Training RMSE"])
+        for ep in range(len(train_metrics["steps_per_episode"])):
+            writer.writerow([
+                ep + 1,
+                train_metrics["steps_per_episode"][ep],
+                train_metrics["epsilon_per_episode"][ep],
+                train_metrics["mae_per_episode"][ep],
+                train_metrics["rmse_per_episode"][ep]
+            ])
+    
+    # Save test metrics
+    with open(test_metrics_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Episode", "Test MAE", "Test RMSE"])
+        for ep, mae in test_metrics["test_mae_per_interval"]:
+            rmse = dict(test_metrics["test_rmse_per_interval"]).get(ep, "")
+            writer.writerow([ep, mae, rmse])
+    
+    # # Optionally save the imputed data
+    # if imputed_data is not None:
+    #     imputed_data_file = os.path.join(results_dir, 
+    #         f"{dataset_name}_missing_rate_{missing_rate_percent}_imputed_data.csv")
+    #     imputed_data.to_csv(imputed_data_file, index=False)
 
 
 
@@ -493,15 +622,15 @@ def run_experiment(dataset_id, missing_rate):
 
     # Set up training environment
     env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
-    agent = RLImputer(env, alpha=0.15, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
+    agent = RLImputer(env, alpha=0.10, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
 
     # Set up test environment
     test_env = ImputationEnvironment(incomplete_data=incomplete_data_test, complete_data=complete_data_test, missing_rate=missing_rate)
 
     # Train the agent with early stopping
-    (train_mae_per_episode, train_rmse_per_episode, final_steps, avg_steps, steps_per_episode,
-     epsilon_per_episode, test_mae_per_interval, test_rmse_per_interval) = agent.train(
-        dataset_name, episodes=10000, missing_rate=missing_rate, test_env=test_env, test_interval=1, patience=35)
+    train_metrics, test_metrics = agent.train(
+        dataset_name, episodes=10000, missing_rate=missing_rate, test_env=test_env, test_interval=20, patience=1000
+    )
 
     # Apply trained policy to test environment and calculate final test metrics
     test_env.reset()  # Reset test environment before final testing
@@ -510,23 +639,17 @@ def run_experiment(dataset_id, missing_rate):
 
     # Save or log results
     save_training_results(
-        dataset_name=dataset_name,  # Updated parameter
+        dataset_name=dataset_name,
         missing_rate=missing_rate,
         results_dir="./results",
-        steps_per_episode=steps_per_episode,
-        epsilon_per_episode=epsilon_per_episode,
-        mae_per_episode=train_mae_per_episode,
-        rmse_per_episode=train_rmse_per_episode,
-        final_episode_steps=final_steps,
-        average_steps=avg_steps,
-        imputed_data=env.state,
-        test_mae_intervals=test_mae_per_interval,
-        test_rmse_intervals=test_rmse_per_interval
+        train_metrics=train_metrics,
+        test_metrics=test_metrics,
+        imputed_data=env.state
     )
 
     # Save results to JSON for comparison
     save_json_results(
-        dataset_name=dataset_name,  # Updated parameter
+        dataset_name=dataset_name,
         missing_rate=missing_rate,
         test_mae=test_mae,
         test_rmse=test_rmse,
@@ -535,23 +658,121 @@ def run_experiment(dataset_id, missing_rate):
     )
 
 
+def hyperparameter_tuning_single_combination(args):
+    dataset_id, missing_rate, alpha, gamma = args
+    logging.info(f"Testing alpha={alpha}, gamma={gamma}")
+
+    # Set random seed for reproducibility
+    seed = int(alpha * 1000 + gamma * 1000) % (2**32 - 1)
+    random.seed(seed)
+    np.random.seed(seed)
+
+    try:
+        # Load and split dataset
+        complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
+        complete_data_train, incomplete_data_train, complete_data_test, incomplete_data_test = split_dataset(complete_data, missing_rate)
+
+        # Set up training environment
+        env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
+        agent = RLImputer(env, alpha=alpha, gamma=gamma, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
+
+        # Set up test environment
+        test_env = ImputationEnvironment(
+            incomplete_data=incomplete_data_test,
+            complete_data=complete_data_test,
+            missing_rate=missing_rate
+        )
+
+        # Train the agent (reduced episodes for tuning)
+        train_metrics, test_metrics = agent.train(
+            dataset_name=dataset_mapping.get(dataset_id, f"dataset_{dataset_id}"),
+            episodes=500,  # Reduced episodes for faster tuning
+            missing_rate=missing_rate,
+            test_env=test_env,
+            test_interval=100,
+            patience=1000
+        )
+
+        # Apply trained policy to test environment and calculate final test metrics
+        test_env.reset()
+        agent.apply_policy(test_env)
+        test_mae, test_rmse = calculate_metrics(test_env)
+
+        logging.info(f"alpha={alpha}, gamma={gamma}, Test MAE={test_mae}")
+
+        return (alpha, gamma, test_mae, test_rmse)
+    except Exception as e:
+        logging.error(f"Error with alpha={alpha}, gamma={gamma}: {e}")
+        return (alpha, gamma, float('inf'), float('inf'))
+
+def prepare_hyperparameter_combinations(dataset_id, missing_rate):
+    alpha_values = np.arange(0.01, 0.51, 0.05)  # From 0.01 to 0.50 in steps of 0.05
+    gamma_values = np.arange(0.90, 1.00, 0.01)  # From 0.90 to 0.99 in steps of 0.01
+
+    hyperparameter_combinations = [
+        (dataset_id, missing_rate, alpha, gamma)
+        for alpha, gamma in itertools.product(alpha_values, gamma_values)
+    ]
+
+    return hyperparameter_combinations
+
+def hyperparameter_tuning_parallel(dataset_id, missing_rate):
+    combinations = prepare_hyperparameter_combinations(dataset_id, missing_rate)
+    num_processes = 8  # Leave one CPU core free
+
+    dataset_name = dataset_mapping.get(dataset_id, f"dataset_{dataset_id}")
+    missing_rate_percent = int(missing_rate * 100)
+    results_file = f"./results/{dataset_name}_mr_{missing_rate_percent}_hyperparameter_tuning_results.csv"
+    os.makedirs(os.path.dirname(results_file), exist_ok=True)
+
+
+    best_mae = float('inf')
+    best_result = None
+
+    with open(results_file, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(["Alpha", "Gamma", "Test MAE", "Test RMSE"])
+
+        with mp.Pool(processes=num_processes) as pool:
+            # Use imap_unordered for real-time result handling
+            for res in pool.imap_unordered(hyperparameter_tuning_single_combination, combinations):
+                writer.writerow(res)
+                file.flush()  # Ensure data is written to disk immediately
+
+                # Update best_result if current MAE is better
+                if res[2] < best_mae:
+                    best_mae = res[2]
+                    best_result = res
+
+    if best_result and best_mae < float('inf'):
+        print(f"Best MAE: {best_mae} with parameters: alpha={best_result[0]}, gamma={best_result[1]}")
+        logging.info(f"Best MAE: {best_mae} with parameters: alpha={best_result[0]}, gamma={best_result[1]}")
+    else:
+        print("No successful results were obtained.")
+        logging.warning("No successful results were obtained.")
+
+
 
 
 if __name__ == "__main__":
     dataset_ids = [17]  # all datasets
-    missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
-
+    #missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
+    missing_rates = [0.05]  # missing rates
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
-    # Run experiments in parallel using multiprocessing
-    try:
-        with mp.Pool(processes=4) as pool:
-            pool.starmap(run_experiment, experiments)
-    except KeyboardInterrupt:
-        print("KeyboardInterrupt detected, terminating pool.")
-        pool.terminate()  # Terminate all child processes immediately
-        pool.join()  # Wait for the pool to finish cleanup
-        print("All experiments were terminated.")
+
+    for dataset_id in dataset_ids:
+        for missing_rate in missing_rates:
+            hyperparameter_tuning_parallel(dataset_id, missing_rate)
+
+    # try:
+    #     with mp.Pool(processes=4) as pool:
+    #         pool.starmap(run_experiment, experiments)
+    # except KeyboardInterrupt:
+    #     print("KeyboardInterrupt detected, terminating pool.")
+    #     pool.terminate()  # Terminate all child processes immediately
+    #     pool.join()  # Wait for the pool to finish cleanup
+    #     print("All experiments were terminated.")
 
     logging.info("All experiments completed.")
