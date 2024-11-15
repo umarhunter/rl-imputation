@@ -136,28 +136,25 @@ def save_json_results(dataset_name, missing_rate, test_mae, test_rmse, mae_rmse_
 
     logging.info(f"JSON results saved for dataset {dataset_name} with missing rate {missing_rate_percent}%.")
 
-
 def calculate_metrics(env):
-    # Get the positions where data was missing
-    missing_positions = env.missing_indices
+    # Flatten the complete data and the imputed data
+    true_values = env.complete_data.values.flatten()
+    imputed_values = env.state.values.flatten()
 
-    # Extract the true values and imputed values at the missing positions
-    true_values = []
-    imputed_values = []
+    # Handle any remaining NaN values in imputed data (if any)
+    nan_indices = np.isnan(imputed_values)
+    imputed_values[nan_indices] = env.initial_estimate.values.flatten()[nan_indices]
 
-    for position in missing_positions:
-        row, col = position
-        true_value = env.complete_data.iat[row, col]
-        imputed_value = env.state.iat[row, col]
+    # # Denormalize the values
+    # true_values = scaler.inverse_transform(true_values.reshape(-1, 1)).flatten()
+    # imputed_values = scaler.inverse_transform(imputed_values.reshape(-1, 1)).flatten()
 
-        true_values.append(true_value)
-        imputed_values.append(imputed_value)
-
-    # Calculate MAE and RMSE only over the missing positions
+    # Calculate MAE and RMSE
     mae = mean_absolute_error(true_values, imputed_values)
     rmse = root_mean_squared_error(true_values, imputed_values)
-
+    
     return mae, rmse
+
 
 def preprocess_columns_for_missing(df):
     """Preprocess columns by casting int64 columns to float64 to handle NaN values."""
@@ -192,14 +189,29 @@ def generate_missing_df(df, missing_rate):
     return df_with_missing
 
 def load_dataset(datasetid, missing_rate):
-    dataset = fetch_ucirepo(id=datasetid)
-    df = dataset.data.original
+    dataset_name = dataset_mapping.get(datasetid, f"dataset_{datasetid}")
+    cache_file = f"./data/{dataset_name}.csv"
+
+    if os.path.exists(cache_file):
+        df = pd.read_csv(cache_file)
+        metadata_file = f"./data/{dataset_name}_metadata.json"
+        with open(metadata_file, 'r') as f:
+            metadata = json.load(f)
+        target_columns = metadata.get('target_columns', [])
+    else:
+        dataset = fetch_ucirepo(id=datasetid)
+        df = dataset.data.original
+        target_columns = dataset.metadata.target_col
+        metadata = {'target_columns': target_columns}
+        os.makedirs('./data', exist_ok=True)
+        df.to_csv(cache_file, index=False)
+        with open(f"./data/{dataset_name}_metadata.json", 'w') as f:
+            json.dump(metadata, f)
+
 
     if 'ID' in df.columns:
         df = df.drop(columns=['ID'])
 
-    # Drop the target columns before generating missing values
-    target_columns = dataset.metadata.target_col
     logging.info(f"Target columns: {target_columns}")
 
     # Ensure target_columns is valid
@@ -217,11 +229,19 @@ def load_dataset(datasetid, missing_rate):
     # Use df_numerical as complete_data (without missing values)
     complete_data = df_numerical.fillna(df_numerical.mean())  # Initial fill with column means
 
-    # Generate missing values for incomplete_data using the now fully populated complete_data
-    incomplete_data = generate_missing_df(complete_data.copy(), missing_rate)  # Introduce experimental missing values
+    #  # Normalize the data
+    # scaler = MinMaxScaler()
+    # complete_data_scaled = pd.DataFrame(
+    #     scaler.fit_transform(complete_data), columns=complete_data.columns
+    # )
+
+    # Generate missing values on the scaled data
+    if missing_rate > 0:
+        incomplete_data = generate_missing_df(complete_data.copy(), missing_rate)
+    else:
+        incomplete_data = pd.DataFrame()  # No missing values introduced
 
     return complete_data, incomplete_data
-
 
 # Function to log results to a CSV file
 def log_results(dataset_id, missing_rate, mae, rmse):
@@ -284,8 +304,8 @@ class RLImputer:
         }
 
         # Initialize variables for tracking highest test MAE and RMSE
-        highest_test_mae = float('-inf')
-        highest_test_rmse = float('-inf')
+        lowest_test_mae = float('inf')
+        lowest_test_rmse = float('inf')
 
         # Prepare directories and files for real-time logging
         os.makedirs(results_dir, exist_ok=True)
@@ -359,11 +379,11 @@ class RLImputer:
                 test_metrics["test_mae_per_interval"].append((episode, test_mae))
                 test_metrics["test_rmse_per_interval"].append((episode, test_rmse))
 
-                # Update highest test MAE and RMSE
-                if test_mae > highest_test_mae:
-                    highest_test_mae = test_mae
-                if test_rmse > highest_test_rmse:
-                    highest_test_rmse = test_rmse
+                # Update lowest test MAE and RMSE
+                if test_mae < lowest_test_mae:
+                    lowest_test_mae = test_mae
+                if test_rmse < lowest_test_rmse:
+                    lowest_test_rmse = test_rmse
 
                 # Write test metrics to CSV in real-time
                 test_writer.writerow([episode, test_mae, test_rmse])
@@ -387,10 +407,10 @@ class RLImputer:
         train_file.close()
         test_file.close()
 
-        # Log the highest test MAE and RMSE
+        # Log the lowest test MAE and RMSE
         logging.info(
-            f"Dataset {dataset_name} MR {missing_rate}: Highest Test MAE = {highest_test_mae:.6f}, "
-            f"Highest Test RMSE = {highest_test_rmse:.6f}"
+            f"Dataset {dataset_name} MR {missing_rate}: Lowest Test MAE = {lowest_test_mae:.6f}, "
+            f"Lowest Test RMSE = {lowest_test_rmse:.6f}"
         )
 
         logging.info(f"Training completed for dataset {dataset_name} with missing rate {missing_rate}.")
@@ -416,7 +436,7 @@ class RLImputer:
 
 
 class ImputationEnvironment:
-    def __init__(self, incomplete_data, complete_data, missing_rate, adjustment_factor=0.1, error_threshold=0.1):
+    def __init__(self, incomplete_data, complete_data, missing_rate, adjustment_factor=0.01, error_threshold=0.01):
         self.incomplete_data = incomplete_data.copy()
         self.complete_data = complete_data
         self.state = incomplete_data.copy()
@@ -523,6 +543,14 @@ class ImputationEnvironment:
 
         # Apply action using multiplicative adjustment
         new_value = current_value * (1 + self.adjustment_factor * action)
+
+        # Get the column name from the column index
+        col_name = self.state.columns[col]
+        col_min = self.complete_data[col_name].min()
+        col_max = self.complete_data[col_name].max()
+
+        # Clip the new value to prevent it from going out of bounds
+        new_value = np.clip(new_value, col_min, col_max)
         self.state.iat[row, col] = new_value
 
         # Get the next state after applying the action
@@ -657,6 +685,9 @@ def run_experiment(dataset_id, missing_rate):
         results_dir="./results"
     )
 
+def init_worker(complete_data_):
+    global complete_data
+    complete_data = complete_data_
 
 def hyperparameter_tuning_single_combination(args):
     dataset_id, missing_rate, alpha, gamma = args
@@ -668,10 +699,13 @@ def hyperparameter_tuning_single_combination(args):
     np.random.seed(seed)
 
     try:
-        # Load and split dataset
-        complete_data, incomplete_data = load_dataset(dataset_id, missing_rate)
+        # Use the global complete_data
+        global complete_data
+
+        # Split the dataset using the global complete_data
         complete_data_train, incomplete_data_train, complete_data_test, incomplete_data_test = split_dataset(complete_data, missing_rate)
 
+        # Rest of the code remains the same
         # Set up training environment
         env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
         agent = RLImputer(env, alpha=alpha, gamma=gamma, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
@@ -686,10 +720,10 @@ def hyperparameter_tuning_single_combination(args):
         # Train the agent (reduced episodes for tuning)
         train_metrics, test_metrics = agent.train(
             dataset_name=dataset_mapping.get(dataset_id, f"dataset_{dataset_id}"),
-            episodes=500,  # Reduced episodes for faster tuning
+            episodes=700,  # Reduced episodes for faster tuning
             missing_rate=missing_rate,
             test_env=test_env,
-            test_interval=100,
+            test_interval=50,
             patience=1000
         )
 
@@ -702,29 +736,32 @@ def hyperparameter_tuning_single_combination(args):
 
         return (alpha, gamma, test_mae, test_rmse)
     except Exception as e:
-        logging.error(f"Error with alpha={alpha}, gamma={gamma}: {e}")
+        logging.exception(f"Error with alpha={alpha}, gamma={gamma}: {e}")
         return (alpha, gamma, float('inf'), float('inf'))
 
-def prepare_hyperparameter_combinations(dataset_id, missing_rate):
-    alpha_values = np.arange(0.01, 0.51, 0.05)  # From 0.01 to 0.50 in steps of 0.05
-    gamma_values = np.arange(0.90, 1.00, 0.01)  # From 0.90 to 0.99 in steps of 0.01
 
-    hyperparameter_combinations = [
+
+def prepare_hyperparameter_combinations(dataset_id, missing_rate):
+    alpha_values = np.array([0, 0.001, 0.005, 0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5])
+    gamma_values = np.arange(0.90, 1.00, 0.01)
+
+    hyperparameter_combinations = [ 
         (dataset_id, missing_rate, alpha, gamma)
         for alpha, gamma in itertools.product(alpha_values, gamma_values)
     ]
 
     return hyperparameter_combinations
 
-def hyperparameter_tuning_parallel(dataset_id, missing_rate):
+def hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate):
     combinations = prepare_hyperparameter_combinations(dataset_id, missing_rate)
-    num_processes = 8  # Leave one CPU core free
+    num_processes = 14  # Adjust based on your system's capacity
 
     dataset_name = dataset_mapping.get(dataset_id, f"dataset_{dataset_id}")
     missing_rate_percent = int(missing_rate * 100)
-    results_file = f"./results/{dataset_name}_mr_{missing_rate_percent}_hyperparameter_tuning_results.csv"
-    os.makedirs(os.path.dirname(results_file), exist_ok=True)
 
+    results_dir = './results'
+    os.makedirs(results_dir, exist_ok=True)
+    results_file = os.path.join(results_dir, f"{dataset_name}_mr_{missing_rate_percent}_hyperparameter_tuning_results.csv")
 
     best_mae = float('inf')
     best_result = None
@@ -733,23 +770,21 @@ def hyperparameter_tuning_parallel(dataset_id, missing_rate):
         writer = csv.writer(file)
         writer.writerow(["Alpha", "Gamma", "Test MAE", "Test RMSE"])
 
-        with mp.Pool(processes=num_processes) as pool:
-            # Use imap_unordered for real-time result handling
+        with mp.Pool(processes=num_processes, initializer=init_worker, initargs=(complete_data,)) as pool:
             for res in pool.imap_unordered(hyperparameter_tuning_single_combination, combinations):
                 writer.writerow(res)
-                file.flush()  # Ensure data is written to disk immediately
-
-                # Update best_result if current MAE is better
+                file.flush()
                 if res[2] < best_mae:
                     best_mae = res[2]
                     best_result = res
 
-    if best_result and best_mae < float('inf'):
+    if best_result:
         print(f"Best MAE: {best_mae} with parameters: alpha={best_result[0]}, gamma={best_result[1]}")
         logging.info(f"Best MAE: {best_mae} with parameters: alpha={best_result[0]}, gamma={best_result[1]}")
     else:
         print("No successful results were obtained.")
         logging.warning("No successful results were obtained.")
+
 
 
 
@@ -761,10 +796,11 @@ if __name__ == "__main__":
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
-
     for dataset_id in dataset_ids:
+        # Load the complete dataset without missing values
+        complete_data, _ = load_dataset(dataset_id, missing_rate=0)
         for missing_rate in missing_rates:
-            hyperparameter_tuning_parallel(dataset_id, missing_rate)
+            hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate)
 
     # try:
     #     with mp.Pool(processes=4) as pool:
