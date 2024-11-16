@@ -338,7 +338,7 @@ class RLImputer:
             for position in self.env.missing_indices:
                 done = False
                 position_steps = 0
-                max_position_steps = 200  # Adjusted as per the paper
+                max_position_steps = float('inf')
                 while not done and position_steps < max_position_steps:
                     # Get current state from the environment
                     state = self.env.get_state(position)
@@ -650,14 +650,14 @@ def run_experiment(dataset_id, missing_rate):
 
     # Set up training environment
     env = ImputationEnvironment(incomplete_data_train, complete_data_train, missing_rate)
-    agent = RLImputer(env, alpha=0.10, gamma=0.9, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
+    agent = RLImputer(env, alpha=0.2, gamma=0.92, epsilon=1.0, epsilon_decay=0.995, epsilon_min=0.1)
 
     # Set up test environment
     test_env = ImputationEnvironment(incomplete_data=incomplete_data_test, complete_data=complete_data_test, missing_rate=missing_rate)
 
     # Train the agent with early stopping
     train_metrics, test_metrics = agent.train(
-        dataset_name, episodes=10000, missing_rate=missing_rate, test_env=test_env, test_interval=20, patience=1000
+        dataset_name, episodes=500, missing_rate=missing_rate, test_env=test_env, test_interval=5, patience=25
     )
 
     # Apply trained policy to test environment and calculate final test metrics
@@ -790,25 +790,25 @@ def hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate):
 
 
 if __name__ == "__main__":
-    dataset_ids = [17]  # all datasets
+    dataset_ids = [17, 16]  # all datasets
     #missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
     missing_rates = [0.05]  # missing rates
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
-    for dataset_id in dataset_ids:
-        # Load the complete dataset without missing values
-        complete_data, _ = load_dataset(dataset_id, missing_rate=0)
-        for missing_rate in missing_rates:
-            hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate)
+    # for dataset_id in dataset_ids:
+    #     # Load the complete dataset without missing values
+    #     complete_data, _ = load_dataset(dataset_id, missing_rate=0)
+    #     for missing_rate in missing_rates:
+    #         hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate)
 
-    # try:
-    #     with mp.Pool(processes=4) as pool:
-    #         pool.starmap(run_experiment, experiments)
-    # except KeyboardInterrupt:
-    #     print("KeyboardInterrupt detected, terminating pool.")
-    #     pool.terminate()  # Terminate all child processes immediately
-    #     pool.join()  # Wait for the pool to finish cleanup
-    #     print("All experiments were terminated.")
+    try:
+        with mp.Pool(processes=12) as pool:
+            pool.starmap(run_experiment, experiments)
+    except KeyboardInterrupt:
+        print("KeyboardInterrupt detected, terminating pool.")
+        pool.terminate()  # Terminate all child processes immediately
+        pool.join()  # Wait for the pool to finish cleanup
+        print("All experiments were terminated.")
 
     logging.info("All experiments completed.")
