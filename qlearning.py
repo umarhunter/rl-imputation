@@ -422,7 +422,7 @@ class RLImputer:
         for position in env.missing_indices:
             done = False
             position_steps = 0
-            max_position_steps = 200  # Same as in training
+            max_position_steps = float('inf')
             while not done and position_steps < max_position_steps:
                 state = env.get_state(position)
                 q_values = self.q_table[state]
@@ -657,7 +657,7 @@ def run_experiment(dataset_id, missing_rate):
 
     # Train the agent with early stopping
     train_metrics, test_metrics = agent.train(
-        dataset_name, episodes=500, missing_rate=missing_rate, test_env=test_env, test_interval=5, patience=25
+        dataset_name, episodes=465, missing_rate=missing_rate, test_env=test_env, test_interval=2, patience=50
     )
 
     # Apply trained policy to test environment and calculate final test metrics
@@ -791,8 +791,8 @@ def hyperparameter_tuning_parallel(dataset_id, complete_data, missing_rate):
 
 if __name__ == "__main__":
     dataset_ids = [17, 16]  # all datasets
-    #missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
-    missing_rates = [0.05]  # missing rates
+    missing_rates = [0.05, 0.10, 0.15, 0.20]  # missing rates
+    #missing_rates = [0.05]
     # Create a list of all experiments (dataset_id, missing_rate)
     experiments = [(dataset_id, missing_rate) for dataset_id in dataset_ids for missing_rate in missing_rates]
 
